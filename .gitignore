@@ -29,8 +29,11 @@ wandb/
 
 # Generated datasets
 *.json
+*.csv
 training_scenarios.json
 validation_scenarios.json
+training_scenarios.csv
+validation_scenarios.csv
 
 # Database files
 *.db
