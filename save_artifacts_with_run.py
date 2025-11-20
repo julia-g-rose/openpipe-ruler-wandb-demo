@@ -11,8 +11,16 @@ load_dotenv()
 
 
 def main():
-    """Save Enron email scenarios as W&B artifacts"""
+    """Save Enron email scenarios as W&B artifacts with a persistent run"""
     project_name = os.environ.get("WANDB_PROJECT", "enron-email-search")
+    
+    # Initialize W&B run (this creates a persistent run)
+    run = wandb.init(
+        project=project_name,
+        job_type="dataset-creation",
+        tags=["enron", "email-scenarios", "dataset"],
+        name="upload-enron-scenarios"
+    )
     
     # Load training scenarios
     training_scenarios = load_scenarios(
@@ -23,6 +31,11 @@ def main():
     validation_scenarios = load_scenarios(
         split="test", limit=20, max_messages=1, shuffle=True, seed=42
     )
+
+    # Log dataset statistics to the run
+    run.summary["training_scenarios_count"] = len(training_scenarios)
+    run.summary["validation_scenarios_count"] = len(validation_scenarios)
+    run.summary["total_scenarios"] = len(training_scenarios) + len(validation_scenarios)
 
     # Convert scenarios to dictionaries for saving
     training_data = [scenario.model_dump() for scenario in training_scenarios]
@@ -35,8 +48,7 @@ def main():
     with open("validation_scenarios.json", "w") as f:
         json.dump(validation_data, f, indent=2)
     
-    # Log to W&B as artifacts (using artifact.save() which creates ephemeral runs)
-    # Note: artifact.save() will create temporary runs internally, but they won't persist
+    # Log to W&B as artifacts (using run.log_artifact() with a persistent run)
     training_artifact = wandb.Artifact(
         name="enron-training-scenarios",
         type="dataset",
@@ -49,7 +61,7 @@ def main():
         }
     )
     training_artifact.add_file("training_scenarios.json")
-    training_artifact.save(project=project_name)
+    run.log_artifact(training_artifact)
     
     validation_artifact = wandb.Artifact(
         name="enron-validation-scenarios",
@@ -63,7 +75,27 @@ def main():
         }
     )
     validation_artifact.add_file("validation_scenarios.json")
-    validation_artifact.save(project=project_name)
+    run.log_artifact(validation_artifact)
+    
+    # Log sample scenario as a table for visualization
+    sample_table_data = []
+    for scenario in training_scenarios[:5]:  # First 5 training scenarios
+        sample_table_data.append([
+            scenario.id,
+            scenario.question,
+            scenario.answer,
+            scenario.inbox_address,
+            len(scenario.message_ids)
+        ])
+    
+    sample_table = wandb.Table(
+        columns=["ID", "Question", "Answer", "Inbox", "Num Messages"],
+        data=sample_table_data
+    )
+    run.log({"sample_scenarios": sample_table})
+    
+    # Finish the run
+    run.finish()
     
     return training_scenarios, validation_scenarios
 

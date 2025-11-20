@@ -51,7 +51,6 @@ def main():
     )
     weave.publish(validation_dataset)
     
-    print(f"✅ Datasets published to Weave project: {project_name}")
     return training_scenarios, validation_scenarios
 
 
