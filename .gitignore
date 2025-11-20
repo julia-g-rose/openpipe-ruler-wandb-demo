@@ -1,0 +1,52 @@
+# Environment variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# W&B / Weave
+wandb/
+.wandb/
+
+# Generated datasets
+*.json
+training_scenarios.json
+validation_scenarios.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+enron_emails.db
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter Notebook
+.ipynb_checkpoints

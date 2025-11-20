@@ -1,0 +1,8 @@
+openpipe-art==0.5.2
+langchain-core
+tenacity
+datasets
+wandb
+weave
+pydantic
+tqdm
