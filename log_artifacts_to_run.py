@@ -77,23 +77,6 @@ def main():
     validation_artifact.add_file("validation_scenarios.json")
     run.log_artifact(validation_artifact)
     
-    # Log sample scenario as a table for visualization
-    sample_table_data = []
-    for scenario in training_scenarios[:5]:  # First 5 training scenarios
-        sample_table_data.append([
-            scenario.id,
-            scenario.question,
-            scenario.answer,
-            scenario.inbox_address,
-            len(scenario.message_ids)
-        ])
-    
-    sample_table = wandb.Table(
-        columns=["ID", "Question", "Answer", "Inbox", "Num Messages"],
-        data=sample_table_data
-    )
-    run.log({"sample_scenarios": sample_table})
-    
     # Finish the run
     run.finish()
     
