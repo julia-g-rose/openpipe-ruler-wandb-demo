@@ -619,13 +619,23 @@ async def rollout(
     # Initialize tool usage scorer for evaluating each tool call
     tool_scorer = ToolUsageScorer(judge_model=tool_judge_model)
 
-    for _ in range(MAX_TURNS):
-        response = await client.chat.completions.create(
+    # Helper function with retry logic for API calls
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential_jitter(initial=1, max=60, jitter=5),
+        retry=retry_if_exception_type((RateLimitError, Exception)),
+    )
+    async def call_model_with_retry():
+        """Call the model with retry logic for rate limit errors."""
+        return await client.chat.completions.create(
             model=model.get_inference_name(),
             temperature=1,
             messages=traj.messages(),
             tools=traj.tools,
         )
+
+    for _ in range(MAX_TURNS):
+        response = await call_model_with_retry()
 
         response_message = response.choices[0].message
         traj.messages_and_choices.append(response.choices[0])

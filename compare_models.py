@@ -339,15 +339,39 @@ async def main(config_path: str = "config.yaml"):
     model_names = [comp_model_1_name, comp_model_2_name, "qwen-base"]
     display_names = [comp_model_1_name, comp_model_2_name, "OpenPipe/Qwen3-14B-Instruct base"]
     
-    # Run evaluations
+    # Run evaluations and collect predictions
     results = {}
+    all_predictions = {}  # Store individual predictions for table creation
     
     for evaluation, model, model_name, display_name in zip(evaluations, models, model_names, display_names):
+        print(f"\n🔄 Evaluating {display_name}...")
+        
+        # Run evaluation
         eval_result = await evaluation.evaluate(
             model,
             __weave={"display_name": display_name}
         )
         results[model_name] = eval_result
+        
+        # Also collect individual predictions for the detailed table
+        print(f"📊 Collecting detailed predictions for {model_name}...")
+        model_predictions = []
+        for row in dataset.rows:
+            try:
+                # Run predict on each example
+                pred_input = {"scenario": row}
+                prediction = await model.predict(row)
+                model_predictions.append(prediction)
+            except Exception as e:
+                print(f"Warning: Prediction failed for model {model_name}: {e}")
+                model_predictions.append({
+                    "trajectory": None,
+                    "scenario": None,
+                    "answer": "",
+                    "source_ids": []
+                })
+        
+        all_predictions[model_name] = model_predictions
     
     # Create leaderboard summary table
     leaderboard_data = []
@@ -375,6 +399,117 @@ async def main(config_path: str = "config.yaml"):
         }
         
         leaderboard_data.append(leaderboard_entry)
+    
+    # Create detailed validation table with model outputs and scores
+    # Similar to train.py lines 233-243, but for multiple models
+    print("\nCreating detailed validation comparison table...")
+    
+    # Start with base validation dataset columns
+    validation_rows = dataset.rows
+    base_columns = ["ID", "Split", "Question", "Answer", "Inbox", "Num Messages", "Realism Score"]
+    table_data = []
+    
+    for row in validation_rows:
+        table_data.append([
+            row.get("id", ""),
+            row.get("split", ""),
+            row.get("question", "")[:100] + "..." if len(row.get("question", "")) > 100 else row.get("question", ""),
+            row.get("answer", "")[:100] + "..." if len(row.get("answer", "")) > 100 else row.get("answer", ""),
+            row.get("inbox_address", ""),
+            len(row.get("message_ids", [])),
+            row.get("how_realistic", 0.0)
+        ])
+    
+    # Create the W&B table
+    validation_table = wandb.Table(columns=base_columns, data=table_data)
+    
+    # For each model, add columns with model-specific outputs and scores
+    for model_name, predictions in all_predictions.items():
+        # Create a safe column suffix from model name
+        col_suffix = f"_{model_name.replace('/', '-').replace('.', '-')}"
+        
+        # Collect data for this model's columns
+        model_outputs = []
+        source_ids_list = []
+        judge_corrects = []
+        judge_reasonings = []
+        ruler_rewards = []
+        retrieved_correct_sources_list = []
+        tool_appropriate_rates = []
+        tool_optimal_rates = []
+        
+        # Process each prediction
+        for i, pred in enumerate(predictions):
+            try:
+                if pred and pred.get('trajectory'):
+                    traj = pred['trajectory']
+                    scenario = pred.get('scenario')
+                    
+                    # Extract model output
+                    answer = pred.get('answer', '')
+                    source_ids = pred.get('source_ids', [])
+                    
+                    model_outputs.append(answer[:200] + "..." if len(answer) > 200 else answer)
+                    source_ids_list.append(str(source_ids))
+                    
+                    # Extract metrics from trajectory
+                    if hasattr(traj, 'metrics'):
+                        judge_corrects.append(traj.metrics.get("correct", 0.0))
+                        retrieved_correct_sources_list.append(traj.metrics.get("retrieved_correct_sources", 0.0))
+                        tool_appropriate_rates.append(traj.metrics.get("tool_appropriate_rate", 0.0))
+                        tool_optimal_rates.append(traj.metrics.get("tool_optimal_rate", 0.0))
+                    else:
+                        judge_corrects.append(0.0)
+                        retrieved_correct_sources_list.append(0.0)
+                        tool_appropriate_rates.append(0.0)
+                        tool_optimal_rates.append(0.0)
+                    
+                    # Extract judge reasoning from metadata
+                    if hasattr(traj, 'metadata'):
+                        reasoning = traj.metadata.get("judge_reasoning", "")
+                        judge_reasonings.append(reasoning[:100] + "..." if len(reasoning) > 100 else reasoning)
+                    else:
+                        judge_reasonings.append("")
+                    
+                    # Extract ruler reward
+                    if hasattr(traj, 'reward'):
+                        ruler_rewards.append(traj.reward)
+                    else:
+                        ruler_rewards.append(0.0)
+                else:
+                    # No valid prediction
+                    model_outputs.append("")
+                    source_ids_list.append("[]")
+                    judge_corrects.append(0.0)
+                    judge_reasonings.append("")
+                    ruler_rewards.append(0.0)
+                    retrieved_correct_sources_list.append(0.0)
+                    tool_appropriate_rates.append(0.0)
+                    tool_optimal_rates.append(0.0)
+            except Exception as e:
+                print(f"Warning: Could not process prediction {i} for model {model_name}: {e}")
+                model_outputs.append("")
+                source_ids_list.append("[]")
+                judge_corrects.append(0.0)
+                judge_reasonings.append("")
+                ruler_rewards.append(0.0)
+                retrieved_correct_sources_list.append(0.0)
+                tool_appropriate_rates.append(0.0)
+                tool_optimal_rates.append(0.0)
+        
+        # Add columns for this model (similar to train.py lines 234-240)
+        validation_table.add_column(f"model_output{col_suffix}", model_outputs)
+        validation_table.add_column(f"model_source_ids{col_suffix}", source_ids_list)
+        validation_table.add_column(f"judge_correct{col_suffix}", judge_corrects)
+        validation_table.add_column(f"judge_reasoning{col_suffix}", judge_reasonings)
+        validation_table.add_column(f"ruler_reward{col_suffix}", ruler_rewards)
+        validation_table.add_column(f"retrieved_correct_sources{col_suffix}", retrieved_correct_sources_list)
+        validation_table.add_column(f"tool_appropriate_rate{col_suffix}", tool_appropriate_rates)
+        validation_table.add_column(f"tool_optimal_rate{col_suffix}", tool_optimal_rates)
+    
+    # Log the comprehensive validation table
+    run.log({"validation_comparison_table": validation_table})
+    print(f"✓ Logged validation comparison table with {len(validation_rows)} rows and outputs from {len(results)} models")
     
     # Log summary metrics to W&B for parallel coordinates
     for model_name, result in results.items():
