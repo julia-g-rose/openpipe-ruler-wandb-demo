@@ -20,7 +20,7 @@ This project demonstrates training an email search agent using OpenPipe's ART (A
 
 - **`helpers.py`** - Shared utilities and functions
   - `rollout()` - Core function that executes the agent on a scenario
-  - `judge_correctness()` - LLM-based correctness evaluation
+  - `CorrectnessJudgeScorer` - Weave scorer for LLM-based correctness evaluation
   - `print_trajectory()` - Pretty-prints agent trajectories
   - Data models: `EmailScenario`, `ProjectTrajectory`, `CorrectnessJudgeResponse`
 

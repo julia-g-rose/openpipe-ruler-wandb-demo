@@ -142,35 +142,6 @@ class CorrectnessJudgeScorer(weave.Scorer):
             }
 
 
-# Legacy function for backwards compatibility
-@retry(stop=stop_after_attempt(3))
-async def judge_correctness(
-    scenario: Scenario, answer: str, judge_model: str = "openai/gpt-4.1"
-) -> CorrectnessJudgeResponse:
-    """Judge whether an AI answer is correct given a scenario and reference answer.
-    
-    DEPRECATED: Use CorrectnessJudgeScorer instead for better Weave integration.
-    
-    Args:
-        scenario: The scenario containing the question and reference answer
-        answer: The AI-generated answer to evaluate
-        judge_model: The model to use for judging (default: openai/gpt-4.1)
-    
-    Returns:
-        CorrectnessJudgeResponse with reasoning and accept/reject decision
-    """
-    scorer = CorrectnessJudgeScorer(judge_model=judge_model)
-    result = await scorer.score(
-        output=answer,
-        question=scenario.question,
-        reference_answer=scenario.answer
-    )
-    return CorrectnessJudgeResponse(
-        reasoning=result["reasoning"],
-        accept=result["accept"]
-    )
-
-
 class ProjectTrajectory(art.Trajectory):
     final_answer: FinalAnswer | None = None
 
@@ -279,14 +250,16 @@ async def rollout(
 
                     if tool_name == "return_final_answer":
                         traj.final_answer = result
-                        # Score the trajectory
+                        # Score the trajectory using the Weave scorer
                         if traj.final_answer:
-                            correctness_judge_response = await judge_correctness(
-                                scenario, traj.final_answer.answer, correctness_judge_model
+                            scorer = CorrectnessJudgeScorer(judge_model=correctness_judge_model)
+                            score_result = await scorer.score(
+                                output=traj.final_answer.answer,
+                                question=scenario.question,
+                                reference_answer=scenario.answer
                             )
-                            traj.metrics["correct"] = float(
-                                correctness_judge_response.accept
-                            )
+                            traj.metrics["correct"] = score_result["correct"]
+                            traj.metrics["reasoning"] = score_result["reasoning"]
                         return traj
         except Exception as e:
             print(f"Error executing tool call: {e}")
