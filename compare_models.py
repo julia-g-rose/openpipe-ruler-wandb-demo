@@ -72,19 +72,20 @@ class WeaveModelWrapper(weave.Model):
     
     @weave.op()
     async def predict(self, scenario: dict) -> dict:
-        """Run the model on a scenario and return results.
+        """Run the model on a scenario and return raw trajectory data for scoring.
         
         Args:
             scenario: Dict containing scenario information
             
         Returns:
-            Dict with model outputs and metrics
+            Dict with trajectory data and scenario for scoring
         """
         # Convert dict to Scenario object
         scenario_obj = Scenario(**scenario)
         email_scenario = EmailScenario(step=0, scenario=scenario_obj)
         
-        # Run rollout with all scorers
+        # Run rollout WITHOUT pre-computing scores (we'll do that in the scorers)
+        # Note: We still need the rollout to do tool evaluation for ToolUsageScorer
         trajectory = await rollout(
             self.model,
             email_scenario,
@@ -92,13 +93,12 @@ class WeaveModelWrapper(weave.Model):
             tool_judge_model=self.tool_judge_model
         )
         
-        # Extract results
+        # Return raw data for scorers to process
         result = {
+            "trajectory": trajectory,
+            "scenario": scenario_obj,
             "answer": trajectory.final_answer.answer if trajectory.final_answer else "",
             "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
-            "metrics": dict(trajectory.metrics),
-            "tool_evaluations": trajectory.tool_evaluations,
-            "num_turns": len([m for m in trajectory.messages_and_choices if isinstance(m, dict) and m.get('role') == 'assistant'])
         }
         
         return result
@@ -113,10 +113,10 @@ class OpenAIModelWrapper(weave.Model):
     
     @weave.op()
     async def predict(self, scenario: dict) -> dict:
-        """Run OpenAI model on a scenario.
+        """Run OpenAI model on a scenario and return raw trajectory data for scoring.
         
         This uses a mock ART model that wraps OpenAI's API,
-        then runs the full rollout with tool calling and evaluation.
+        then runs the full rollout with tool calling.
         """
         # Convert dict to Scenario object
         scenario_obj = Scenario(**scenario)
@@ -125,7 +125,7 @@ class OpenAIModelWrapper(weave.Model):
         # Create a mock ART model that wraps OpenAI
         openai_model = OpenAIArtModel(self.model_name)
         
-        # Run rollout with all scorers
+        # Run rollout WITHOUT pre-computing scores (we'll do that in the scorers)
         trajectory = await rollout(
             openai_model,
             email_scenario,
@@ -133,53 +133,115 @@ class OpenAIModelWrapper(weave.Model):
             tool_judge_model=self.tool_judge_model
         )
         
-        # Extract results
+        # Return raw data for scorers to process
         result = {
+            "trajectory": trajectory,
+            "scenario": scenario_obj,
             "answer": trajectory.final_answer.answer if trajectory.final_answer else "",
             "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
-            "metrics": dict(trajectory.metrics),
-            "tool_evaluations": trajectory.tool_evaluations,
-            "num_turns": len([m for m in trajectory.messages_and_choices if isinstance(m, dict) and m.get('role') == 'assistant'])
         }
         
         return result
 
 
-# Define scorers that work with the model outputs
-@weave.op()
-def extract_correctness_score(model_output: dict) -> dict:
-    """Extract correctness score from model output."""
-    return {
-        "correct": model_output.get("metrics", {}).get("correct", 0.0),
-        "reasoning": model_output.get("metrics", {}).get("reasoning", "")
-    }
-
+# Weave-compatible scorer wrappers that use the actual scorer classes from helpers.py
+# These run the real scoring logic instead of just extracting pre-computed metrics
 
 @weave.op()
-def extract_source_retrieval_scores(model_output: dict) -> dict:
-    """Extract source retrieval scores from model output."""
-    metrics = model_output.get("metrics", {})
-    return {
-        "source_precision": metrics.get("source_precision", 0.0),
-        "source_recall": metrics.get("source_recall", 0.0),
-        "source_f1": metrics.get("source_f1", 0.0),
-        "retrieved_correct_sources": metrics.get("retrieved_correct_sources", 0.0)
-    }
+async def score_correctness(model_output: dict) -> dict:
+    """Score answer correctness using CorrectnessJudgeScorer from helpers.py.
+    
+    This uses the actual scoring logic defined in helpers.CorrectnessJudgeScorer
+    (line 132) rather than extracting pre-computed metrics.
+    """
+    trajectory = model_output.get("trajectory")
+    scenario = model_output.get("scenario")
+    answer = model_output.get("answer", "")
+    
+    if not scenario:
+        return {"correct": 0.0, "reasoning": "Missing scenario data"}
+    
+    # Initialize and use the actual scorer from helpers.py
+    correctness_scorer = CorrectnessJudgeScorer(judge_model="openai/gpt-4o")
+    result = await correctness_scorer.score(
+        output=answer,
+        question=scenario.question,
+        reference_answer=scenario.answer
+    )
+    return result
 
 
 @weave.op()
-def extract_tool_usage_scores(model_output: dict) -> dict:
-    """Extract tool usage scores from model output."""
-    metrics = model_output.get("metrics", {})
+async def score_source_retrieval(model_output: dict) -> dict:
+    """Score source retrieval using SourceRetrievalScorer from helpers.py.
+    
+    This uses the actual scoring logic defined in helpers.SourceRetrievalScorer
+    (line 214) rather than extracting pre-computed metrics.
+    """
+    scenario = model_output.get("scenario")
+    source_ids = model_output.get("source_ids", [])
+    
+    if not scenario:
+        return {
+            "source_precision": 0.0,
+            "source_recall": 0.0,
+            "source_f1": 0.0,
+            "retrieved_correct_sources": 0.0
+        }
+    
+    # Initialize and use the actual scorer from helpers.py
+    source_scorer = SourceRetrievalScorer()
+    result = await source_scorer.score(
+        output={"source_ids": source_ids},
+        expected_source_ids=scenario.message_ids
+    )
+    return result
+
+
+@weave.op()
+def score_tool_usage(model_output: dict) -> dict:
+    """Score tool usage by aggregating tool evaluations from the trajectory.
+    
+    Tool evaluations are computed during rollout using helpers.ToolUsageScorer (line 284).
+    This function aggregates those evaluations using the same logic as 
+    helpers._add_tool_usage_metrics (line 513).
+    
+    This ensures the leaderboard shows the actual tool evaluation code from helpers.py.
+    """
+    trajectory = model_output.get("trajectory")
+    
+    if not trajectory or not trajectory.tool_evaluations:
+        return {
+            "total_decisions_evaluated": 0.0,
+            "actual_tool_calls": 0.0,
+            "no_tool_call_instances": 0.0,
+            "tool_appropriate_rate": 0.0,
+            "tool_optimal_rate": 0.0,
+            "tool_optimal_count": 0.0,
+            "tool_suboptimal_count": 0.0,
+            "tool_incorrect_count": 0.0
+        }
+    
+    # Aggregate tool evaluations using the same logic as _add_tool_usage_metrics
+    total = len(trajectory.tool_evaluations)
+    appropriate_count = sum(1 for eval in trajectory.tool_evaluations if eval["appropriate"] == 1.0)
+    optimal_count = sum(1 for eval in trajectory.tool_evaluations if eval["label"] == "optimal")
+    suboptimal_count = sum(1 for eval in trajectory.tool_evaluations if eval["label"] == "suboptimal")
+    incorrect_count = sum(1 for eval in trajectory.tool_evaluations if eval["label"] == "incorrect")
+    
+    # Count actual tool calls vs no tool calls
+    actual_tool_calls = sum(1 for eval in trajectory.tool_evaluations if eval["tool_name"] != "NO_TOOL_CALL")
+    no_tool_call_count = sum(1 for eval in trajectory.tool_evaluations if eval["tool_name"] == "NO_TOOL_CALL")
+    
     return {
-        "total_decisions_evaluated": metrics.get("total_decisions_evaluated", 0.0),
-        "actual_tool_calls": metrics.get("actual_tool_calls", 0.0),
-        "no_tool_call_instances": metrics.get("no_tool_call_instances", 0.0),
-        "tool_appropriate_rate": metrics.get("tool_appropriate_rate", 0.0),
-        "tool_optimal_rate": metrics.get("tool_optimal_rate", 0.0),
-        "tool_optimal_count": metrics.get("tool_optimal_count", 0.0),
-        "tool_suboptimal_count": metrics.get("tool_suboptimal_count", 0.0),
-        "tool_incorrect_count": metrics.get("tool_incorrect_count", 0.0)
+        "total_decisions_evaluated": float(total),
+        "actual_tool_calls": float(actual_tool_calls),
+        "no_tool_call_instances": float(no_tool_call_count),
+        "tool_appropriate_rate": appropriate_count / total if total > 0 else 0.0,
+        "tool_optimal_rate": optimal_count / total if total > 0 else 0.0,
+        "tool_optimal_count": float(optimal_count),
+        "tool_suboptimal_count": float(suboptimal_count),
+        "tool_incorrect_count": float(incorrect_count)
     }
 
 
@@ -244,33 +306,51 @@ async def main(config_path: str = "config.yaml"):
         """Convert dataset example to the format expected by model predict methods."""
         return {"scenario": example}
     
-    # Create evaluation with all scorers
-    evaluation = weave.Evaluation(
-        name="email-agent-model-comparison",
-        dataset=dataset,
-        scorers=[
-            extract_correctness_score,
-            extract_source_retrieval_scores,
-            extract_tool_usage_scores
-        ],
-        preprocess_model_input=preprocess_model_input
-    )
+    # Common scorers for all evaluations
+    # These use the actual scorer classes from helpers.py
+    scorers = [
+        score_correctness,
+        score_source_retrieval,
+        score_tool_usage
+    ]
     
-    # Run evaluations on all models and store both results and evaluation objects
+    # Create separate evaluation objects for each model
+    # This is required for the Leaderboard API - we need to pass the Evaluation objects to get_ref()
+    evaluations = [
+        weave.Evaluation(
+            name="gpt-4o-mini-evaluation",
+            dataset=dataset,
+            scorers=scorers,
+            preprocess_model_input=preprocess_model_input
+        ),
+        weave.Evaluation(
+            name="gpt-4o-evaluation",
+            dataset=dataset,
+            scorers=scorers,
+            preprocess_model_input=preprocess_model_input
+        ),
+        weave.Evaluation(
+            name="qwen-base-evaluation",
+            dataset=dataset,
+            scorers=scorers,
+            preprocess_model_input=preprocess_model_input
+        ),
+    ]
+    
+    # Models list
+    models = [gpt4o_mini, gpt4o, qwen_base]
+    model_names = ["gpt-4o-mini", "gpt-4o", "qwen-base"]
+    display_names = ["gpt-4o-mini", "gpt-4o", "OpenPipe/Qwen3-14B-Instruct base"]
+    
+    # Run evaluations
     results = {}
-    evaluation_objects = {}
     
-    eval_result_mini = await evaluation.evaluate(gpt4o_mini)
-    results["gpt-4o-mini"] = eval_result_mini
-    evaluation_objects["gpt-4o-mini"] = eval_result_mini
-    
-    eval_result_4o = await evaluation.evaluate(gpt4o)
-    results["gpt-4o"] = eval_result_4o
-    evaluation_objects["gpt-4o"] = eval_result_4o
-    
-    eval_result_qwen = await evaluation.evaluate(qwen_base)
-    results["qwen-base"] = eval_result_qwen
-    evaluation_objects["qwen-base"] = eval_result_qwen
+    for evaluation, model, model_name, display_name in zip(evaluations, models, model_names, display_names):
+        eval_result = await evaluation.evaluate(
+            model,
+            __weave={"display_name": display_name}
+        )
+        results[model_name] = eval_result
     
     # Create leaderboard summary table
     leaderboard_data = []
@@ -288,23 +368,16 @@ async def main(config_path: str = "config.yaml"):
         
         leaderboard_entry = {
             "model": model_name,
-            "correctness": get_metric(result, 'extract_correctness_score', 'correct'),
-            "source_precision": get_metric(result, 'extract_source_retrieval_scores', 'source_precision'),
-            "source_recall": get_metric(result, 'extract_source_retrieval_scores', 'source_recall'),
-            "source_f1": get_metric(result, 'extract_source_retrieval_scores', 'source_f1'),
-            "tool_appropriate_rate": get_metric(result, 'extract_tool_usage_scores', 'tool_appropriate_rate'),
-            "tool_optimal_rate": get_metric(result, 'extract_tool_usage_scores', 'tool_optimal_rate'),
-            "retrieved_correct_sources": get_metric(result, 'extract_source_retrieval_scores', 'retrieved_correct_sources'),
+            "correctness": get_metric(result, 'score_correctness', 'correct'),
+            "source_precision": get_metric(result, 'score_source_retrieval', 'source_precision'),
+            "source_recall": get_metric(result, 'score_source_retrieval', 'source_recall'),
+            "source_f1": get_metric(result, 'score_source_retrieval', 'source_f1'),
+            "tool_appropriate_rate": get_metric(result, 'score_tool_usage', 'tool_appropriate_rate'),
+            "tool_optimal_rate": get_metric(result, 'score_tool_usage', 'tool_optimal_rate'),
+            "retrieved_correct_sources": get_metric(result, 'score_source_retrieval', 'retrieved_correct_sources'),
         }
         
         leaderboard_data.append(leaderboard_entry)
-    
-    # Publish leaderboard to Weave
-    leaderboard_dataset = weave.Dataset(
-        name="model-comparison-leaderboard",
-        rows=leaderboard_data
-    )
-    weave.publish(leaderboard_dataset)
     
     # Log summary metrics to W&B for parallel coordinates
     for model_name, result in results.items():
@@ -320,9 +393,8 @@ async def main(config_path: str = "config.yaml"):
             })
     
     # Create Weave Leaderboard object
-    print("\n📊 Creating Weave Leaderboard...")
-    
     try:
+        # Create leaderboard using the Evaluation objects (not their results)
         leaderboard_spec = leaderboard.Leaderboard(
             name="Email Agent Model Comparison",
             description="""
@@ -335,43 +407,83 @@ This leaderboard compares the performance of different models on the email searc
 
 ### Metrics
 1. **Correctness**: Whether the model's answer matches the expected answer
-2. **Source F1**: F1 score for retrieving the correct source emails
-3. **Tool Optimal Rate**: Percentage of tool calls that were optimal
+2. **Tool Optimal Rate**: Percentage of tool calls that were optimal
+3. **Tool Appropriate Rate**: Percentage of tool calls that were appropriate (not incorrect)
 4. **Retrieved Correct Sources**: Percentage of scenarios where correct source emails were retrieved
 """,
             columns=[
+                # GPT-4o-mini metrics
                 leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluation_objects["gpt-4o-mini"]).uri(),
-                    scorer_name="extract_correctness_score",
+                    evaluation_object_ref=get_ref(evaluations[0]).uri(),
+                    scorer_name="score_correctness",
                     summary_metric_path="correct.mean",
                 ),
                 leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluation_objects["gpt-4o"]).uri(),
-                    scorer_name="extract_correctness_score",
+                    evaluation_object_ref=get_ref(evaluations[0]).uri(),
+                    scorer_name="score_tool_usage",
+                    summary_metric_path="tool_optimal_rate.mean",
+                ),
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[0]).uri(),
+                    scorer_name="score_tool_usage",
+                    summary_metric_path="tool_appropriate_rate.mean",
+                ),
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[0]).uri(),
+                    scorer_name="score_source_retrieval",
+                    summary_metric_path="retrieved_correct_sources.mean",
+                ),
+                # GPT-4o metrics
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[1]).uri(),
+                    scorer_name="score_correctness",
                     summary_metric_path="correct.mean",
                 ),
                 leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluation_objects["qwen-base"]).uri(),
-                    scorer_name="extract_correctness_score",
+                    evaluation_object_ref=get_ref(evaluations[1]).uri(),
+                    scorer_name="score_tool_usage",
+                    summary_metric_path="tool_optimal_rate.mean",
+                ),
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[1]).uri(),
+                    scorer_name="score_tool_usage",
+                    summary_metric_path="tool_appropriate_rate.mean",
+                ),
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[1]).uri(),
+                    scorer_name="score_source_retrieval",
+                    summary_metric_path="retrieved_correct_sources.mean",
+                ),
+                # Qwen base metrics
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[2]).uri(),
+                    scorer_name="score_correctness",
                     summary_metric_path="correct.mean",
+                ),
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[2]).uri(),
+                    scorer_name="score_tool_usage",
+                    summary_metric_path="tool_optimal_rate.mean",
+                ),
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[2]).uri(),
+                    scorer_name="score_tool_usage",
+                    summary_metric_path="tool_appropriate_rate.mean",
+                ),
+                leaderboard.LeaderboardColumn(
+                    evaluation_object_ref=get_ref(evaluations[2]).uri(),
+                    scorer_name="score_source_retrieval",
+                    summary_metric_path="retrieved_correct_sources.mean",
                 ),
             ],
         )
         
         leaderboard_ref = weave.publish(leaderboard_spec)
-        print(f"✅ Leaderboard published!")
     except Exception as e:
-        print(f"⚠️ Error creating Weave Leaderboard: {e}")
-        print("   The leaderboard dataset has been published to Weave instead")
         leaderboard_ref = None
     
     # Finish W&B run
     run.finish()
-    
-    print("\n🎉 Evaluation complete!")
-    if leaderboard_ref:
-        print(f"📊 View leaderboard in Weave: {leaderboard_ref}")
-    print(f"📈 View W&B run: https://wandb.ai/{run.entity}/{run.project}/runs/{run.id}")
 
 
 if __name__ == "__main__":
