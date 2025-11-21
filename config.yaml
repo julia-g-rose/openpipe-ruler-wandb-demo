@@ -16,8 +16,9 @@ training_dataset_artifact: "enron-training-scenarios:latest"
 validation_dataset_artifact: "enron-validation-scenarios:latest"
 
 # Judge models
-ruler_judge_model: "openai/o4-mini"  # Used by RULER for scoring trajectories during training
-correctness_judge_model: "openai/gpt-4.1"  # Used for evaluating answer correctness
+ruler_judge_model: "openai/gpt-4o-mini"  # Used by RULER for scoring trajectories during training
+correctness_judge_model: "openai/gpt-4o"  # Used for evaluating answer correctness
+tool_judge_model: "openai/gpt-4o"  # Used for evaluating tool call appropriateness
 
 # Training hyperparameters
 groups_per_step: 2

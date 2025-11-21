@@ -29,7 +29,7 @@ async def evaluate_model(
     model: art.Model, 
     scenarios: list, 
     scenario_name: str = "test",
-    correctness_judge_model: str = "openai/gpt-4.1"
+    correctness_judge_model: str = "openai/gpt-4o"
 ):
     """
     Evaluate the model on a list of scenarios.

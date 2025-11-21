@@ -18,12 +18,20 @@ This project demonstrates training an email search agent using OpenPipe's ART (A
   - Calculates accuracy metrics
   - Supports evaluation on subsets of data
 
+- **`compare_models.py`** - Multi-model comparison using Weave evaluations
+  - Compares 3 models: gpt-4o-mini, gpt-4o, and OpenPipe/Qwen base model
+  - Uses all 3 Weave scorers (Correctness, Source Retrieval, Tool Usage)
+  - Creates Weave leaderboards for easy comparison
+  - Logs metrics for parallel coordinates visualization
+  - Evaluates on full validation dataset
+
 - **`helpers.py`** - Shared utilities and functions
   - `rollout()` - Core function that executes the agent on a scenario
   - `CorrectnessJudgeScorer` - Weave scorer for LLM-based correctness evaluation
   - `SourceRetrievalScorer` - Weave scorer for evaluating source email retrieval quality
   - `ToolUsageScorer` - Weave scorer for LLM-based evaluation of each tool call decision (applied at every step)
   - `print_trajectory()` - Pretty-prints agent trajectories
+  - **Weave Prompts**: All LLM judge prompts are version-controlled using Weave's prompt management
   - Data models: `EmailScenario`, `ProjectTrajectory`, `CorrectnessJudgeResponse`, `ToolUsageJudgeResponse`
 
 ### Supporting Files
@@ -107,6 +115,46 @@ This will:
 4. Print detailed trajectories and results
 5. Calculate accuracy metrics
 
+### Model Comparison with Weave Leaderboards
+
+Compare multiple models using Weave evaluations and all three scorers:
+
+```bash
+# Use default config.yaml
+python compare_models.py
+
+# Or specify a custom config file
+python compare_models.py --config my_custom_config.yaml
+```
+
+This will:
+1. Load the validation dataset from W&B
+2. Set up three models:
+   - `gpt-4o-mini` (OpenAI)
+   - `gpt-4o` (OpenAI)
+   - OpenPipe/Qwen base model (before fine-tuning)
+3. Run all 3 Weave scorers on each model:
+   - **CorrectnessJudgeScorer** - LLM judge for answer correctness
+   - **SourceRetrievalScorer** - Precision/recall for source emails
+   - **ToolUsageScorer** - LLM judge for tool call appropriateness
+4. Create a Weave leaderboard with all metrics
+5. Log results to W&B for parallel coordinates visualization
+
+**Viewing Results:**
+
+1. **Weave Leaderboard**: Visit `https://wandb.ai/[entity]/[project]-model-comparison/weave/leaderboards`
+2. **Parallel Coordinates**: 
+   - Go to your W&B run page
+   - Click "Add Panel" → "Parallel Coordinates"
+   - Select metrics to compare across models
+   - Color by model name to see patterns
+
+**Key Metrics Tracked:**
+- `correct` - Answer correctness (0.0-1.0)
+- `source_f1` - F1 score for source retrieval
+- `tool_appropriate_rate` - % of appropriate tool decisions
+- `tool_optimal_rate` - % of optimal tool decisions
+
 ## Configuration
 
 All project configuration is stored in `config.yaml` and used across all scripts in the repository:
@@ -128,7 +176,8 @@ validation_dataset_artifact: "enron-validation-scenarios:latest"
 
 # Judge models
 ruler_judge_model: "openai/o4-mini"  # Used by RULER for scoring trajectories during training
-correctness_judge_model: "openai/gpt-4.1"  # Used for evaluating answer correctness
+correctness_judge_model: "openai/gpt-4o"  # Used for evaluating answer correctness
+tool_judge_model: "openai/gpt-4o"  # Used for evaluating tool call appropriateness
 
 # Training hyperparameters
 groups_per_step: 2
