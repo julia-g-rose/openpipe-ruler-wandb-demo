@@ -27,6 +27,9 @@ ENV/
 wandb/
 .wandb/
 
+# Custom config files (keep default config.yaml in git)
+config_*.yaml
+
 # Generated datasets
 *.json
 *.csv

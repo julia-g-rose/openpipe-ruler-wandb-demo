@@ -1,10 +1,10 @@
 import json
-import os
 
 from dotenv import load_dotenv
 import weave
 
 from enron_helpers import load_scenarios
+from helpers import load_config
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,19 +12,29 @@ load_dotenv()
 
 def main():
     """Save Enron email scenarios as Weave datasets"""
-    project_name = os.environ.get("WANDB_PROJECT", "enron-email-search")
+    # Load configuration from config.yaml
+    config = load_config()
+    project_name = config["project"]
     
     # Initialize Weave (this will authenticate with W&B)
     weave.init(project_name)
     
     # Load training scenarios
     training_scenarios = load_scenarios(
-        split="train", limit=50, max_messages=1, shuffle=True, seed=42
+        split="train", 
+        limit=config["training_dataset_size"], 
+        max_messages=1, 
+        shuffle=True, 
+        seed=config["dataset_seed"]
     )
 
     # Load validation scenarios
     validation_scenarios = load_scenarios(
-        split="test", limit=20, max_messages=1, shuffle=True, seed=42
+        split="test", 
+        limit=config["validation_dataset_size"], 
+        max_messages=1, 
+        shuffle=True, 
+        seed=config["dataset_seed"]
     )
 
     # Convert scenarios to dictionaries for saving

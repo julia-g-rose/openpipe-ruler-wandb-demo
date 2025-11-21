@@ -6,3 +6,4 @@ wandb
 weave
 pydantic
 tqdm
+pyyaml

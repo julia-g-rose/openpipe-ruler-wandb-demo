@@ -1,10 +1,10 @@
 import json
-import os
 
 from dotenv import load_dotenv
 import wandb
 
 from enron_helpers import load_scenarios
+from helpers import load_config
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,7 +12,9 @@ load_dotenv()
 
 def main():
     """Log Enron email scenarios as a W&B table for visualization"""
-    project_name = os.environ.get("WANDB_PROJECT", "enron-email-search")
+    # Load configuration from config.yaml
+    config = load_config()
+    project_name = config["project"]
     
     # Initialize W&B run (this creates a persistent run)
     run = wandb.init(
@@ -24,12 +26,20 @@ def main():
     
     # Load training scenarios
     training_scenarios = load_scenarios(
-        split="train", limit=50, max_messages=1, shuffle=True, seed=42
+        split="train", 
+        limit=config["training_dataset_size"], 
+        max_messages=1, 
+        shuffle=True, 
+        seed=config["dataset_seed"]
     )
 
     # Load validation scenarios
     validation_scenarios = load_scenarios(
-        split="test", limit=20, max_messages=1, shuffle=True, seed=42
+        split="test", 
+        limit=config["validation_dataset_size"], 
+        max_messages=1, 
+        shuffle=True, 
+        seed=config["dataset_seed"]
     )
 
     # Log dataset statistics to the run

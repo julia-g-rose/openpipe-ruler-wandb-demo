@@ -1,10 +1,10 @@
 import csv
-import os
 
 from dotenv import load_dotenv
 import wandb
 
 from enron_helpers import load_scenarios
+from helpers import load_config
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,16 +12,26 @@ load_dotenv()
 
 def main():
     """Save Enron email scenarios as W&B artifacts (CSV format)"""
-    project_name = os.environ.get("WANDB_PROJECT", "enron-email-search")
+    # Load configuration from config.yaml
+    config = load_config()
+    project_name = config["project"]
     
     # Load training scenarios
     training_scenarios = load_scenarios(
-        split="train", limit=50, max_messages=1, shuffle=True, seed=42
+        split="train", 
+        limit=config["training_dataset_size"], 
+        max_messages=1, 
+        shuffle=True, 
+        seed=config["dataset_seed"]
     )
 
     # Load validation scenarios
     validation_scenarios = load_scenarios(
-        split="test", limit=20, max_messages=1, shuffle=True, seed=42
+        split="test", 
+        limit=config["validation_dataset_size"], 
+        max_messages=1, 
+        shuffle=True, 
+        seed=config["dataset_seed"]
     )
 
     # Convert scenarios to dictionaries for saving
@@ -60,7 +70,7 @@ def main():
             "split": "train",
             "num_scenarios": len(training_scenarios),
             "max_messages": 1,
-            "seed": 42,
+            "seed": config["dataset_seed"],
             "format": "csv"
         }
     )
@@ -75,7 +85,7 @@ def main():
             "split": "test",
             "num_scenarios": len(validation_scenarios),
             "max_messages": 1,
-            "seed": 42,
+            "seed": config["dataset_seed"],
             "format": "csv"
         }
     )
