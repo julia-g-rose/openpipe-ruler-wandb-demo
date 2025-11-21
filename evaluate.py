@@ -134,7 +134,7 @@ async def main(config_path: str = "config.yaml"):
     
     # Declare the model (same configuration as training)
     model = art.TrainableModel(
-        name=config["model_name"],
+        name=config["base_model"],
         project=config["project"],
         base_model=config["base_model"],
     )

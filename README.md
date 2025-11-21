@@ -161,7 +161,6 @@ All project configuration is stored in `config.yaml` and used across all scripts
 
 ```yaml
 # Model configuration
-model_name: "email-agent-001"
 project: "julia-openpipe-wandb-email-agent-demo-v8"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 

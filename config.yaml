@@ -2,8 +2,7 @@
 # This file defines all hyperparameters and settings for the training run
 
 # Model configuration
-model_name: "email-agent-001"
-project: "julia-openpipe-wandb-email-agent-demo-v11"
+project: "julia-openpipe-wandb-email-agent-demo-v12"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
@@ -21,7 +20,7 @@ correctness_judge_model: "openai/gpt-5"  # Used for evaluating answer correctnes
 tool_judge_model: "openai/gpt-5"  # Used for evaluating tool call appropriateness
 
 # Comparison models (for compare_models.py)
-comparison_model_1: "gpt-4o-mini"  # First model for leaderboard comparison
+comparison_model_1: "gpt-5.1"  # First model for leaderboard comparison
 comparison_model_2: "gpt-5"  # Second model for leaderboard comparison
 
 # Training hyperparameters
