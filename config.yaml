@@ -7,8 +7,8 @@ project: "julia-openpipe-wandb-email-agent-demo-v9"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
-training_dataset_size: 50  # Number of training scenarios to load
-validation_dataset_size: 20  # Number of validation scenarios to load
+training_dataset_size: 20  # Number of training scenarios to load
+validation_dataset_size: 5  # Number of validation scenarios to load
 dataset_seed: 42  # Random seed for dataset shuffling
 
 # Dataset artifacts
