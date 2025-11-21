@@ -55,6 +55,12 @@ class CorrectnessJudgeResponse(BaseModel):
     accept: bool = Field(description="Whether the AI answer should be accepted.")
 
 
+class ToolUsageJudgeResponse(BaseModel):
+    reasoning: str = Field(description="Explanation of whether the tool call was appropriate given the context.")
+    appropriate: bool = Field(description="Whether the tool call was appropriate and helpful for solving the task.")
+    label: str = Field(description="Label categorizing the tool call: 'optimal', 'suboptimal', or 'incorrect'.")
+
+
 class CorrectnessJudgeScorer(weave.Scorer):
     """Weave Scorer for judging answer correctness using an LLM judge.
     
@@ -213,104 +219,276 @@ class SourceRetrievalScorer(weave.Scorer):
 
 
 class ToolUsageScorer(weave.Scorer):
-    """Weave Scorer for evaluating the quality and efficiency of tool usage.
+    """Weave Scorer for evaluating individual tool call decisions using an LLM judge.
     
-    This scorer analyzes the agent's tool call sequence to evaluate whether it:
-    - Used tools appropriately and efficiently
-    - Made necessary searches and email reads
-    - Avoided excessive or redundant tool calls
-    - Successfully completed with a final answer
+    This scorer uses an LLM to evaluate whether each tool call made by the agent was
+    appropriate given the conversation context, the user's query, and the task at hand.
     
     Available tools: search_inbox, read_email, return_final_answer
     
-    Metrics returned:
-        - total_tool_calls: Total number of tool calls made
-        - search_calls: Number of search_inbox calls
-        - read_calls: Number of read_email calls  
-        - completed_task: Whether return_final_answer was called (1.0 or 0.0)
-        - tool_efficiency: Efficiency score (1.0 / (1 + excess_calls))
-        - used_search: Whether search was used at least once (1.0 or 0.0)
-    """
+    The judge evaluates:
+    - Whether the tool choice was appropriate for the current situation
+    - Whether the tool arguments (e.g., search keywords) were well-chosen
+    - Whether the tool call represents progress toward solving the task
     
-    max_expected_calls: int = 10  # Configurable threshold for "efficient" usage
+    Attributes:
+        judge_model: The LLM model to use for judging (default: openai/gpt-4.1)
+        max_retries: Maximum number of retry attempts (default: 3)
+    """
+    judge_model: str = "openai/gpt-4.1"
+    max_retries: int = 3
     
     @weave.op()
     async def score(
         self,
-        trajectory: dict  # Should contain 'messages_and_choices' key with tool call info
+        conversation_history: list,
+        tool_call: dict,
+        tool_result: str,
+        user_query: str
     ) -> dict:
-        """Score the tool usage quality from a trajectory.
+        """Score a single tool call decision.
         
         Args:
-            trajectory: Dict containing the agent's trajectory with messages and tool calls
+            conversation_history: List of messages leading up to this tool call
+            tool_call: The tool call to evaluate (dict with 'name' and 'arguments')
+            tool_result: The result returned by the tool
+            user_query: The original user query/question
             
         Returns:
-            Dict containing tool usage metrics
+            Dict containing:
+                - appropriate: Boolean score (1.0 if appropriate, 0.0 if not)
+                - label: Categorization ('optimal', 'suboptimal', or 'incorrect')
+                - reasoning: Explanation of the judgment
         """
-        # Extract messages from trajectory
-        if isinstance(trajectory, dict):
-            messages = trajectory.get('messages_and_choices', [])
-        elif hasattr(trajectory, 'messages_and_choices'):
-            messages = trajectory.messages_and_choices
-        else:
-            messages = []
+        @retry(stop=stop_after_attempt(self.max_retries))
+        async def _judge_with_retry():
+            # Extract tool call information
+            if isinstance(tool_call, dict):
+                tool_name = tool_call.get('function', {}).get('name', '') or tool_call.get('name', '')
+                tool_args = tool_call.get('function', {}).get('arguments', '') or tool_call.get('arguments', '')
+            else:
+                tool_name = getattr(tool_call, 'name', '')
+                tool_args = getattr(tool_call, 'arguments', '')
+            
+            # Format conversation history for the judge
+            history_str = ""
+            for msg in conversation_history[-5:]:  # Last 5 messages for context
+                if isinstance(msg, dict):
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')
+                    if role == 'system':
+                        history_str += f"[SYSTEM]: {content[:200]}...\n" if len(content) > 200 else f"[SYSTEM]: {content}\n"
+                    elif role == 'user':
+                        history_str += f"[USER]: {content}\n"
+                    elif role == 'assistant':
+                        history_str += f"[ASSISTANT]: {content}\n"
+                    elif role == 'tool':
+                        tool_name_msg = msg.get('name', 'unknown')
+                        history_str += f"[TOOL-{tool_name_msg}]: {content[:200]}...\n" if len(content) > 200 else f"[TOOL-{tool_name_msg}]: {content}\n"
+            
+            system_prompt = dedent(
+                """
+                You are evaluating whether an AI agent made an appropriate tool call decision.
+                
+                The agent has access to three tools:
+                1. search_inbox(keywords: list[str]) - Search for emails matching keywords
+                2. read_email(message_id: str) - Read the full content of a specific email
+                3. return_final_answer(answer: str, reference_message_ids: list[str]) - Return the final answer
+                
+                Your task is to evaluate whether the tool call was appropriate given:
+                - The user's original query
+                - The conversation history so far
+                - The tool that was called and its arguments
+                - The result returned by the tool
+                
+                Categorize the tool call as:
+                - "optimal": The best possible tool choice that makes clear progress toward the goal
+                - "suboptimal": A reasonable tool choice but not ideal (e.g., poor keyword selection, unnecessary reads)
+                - "incorrect": Wrong tool choice or arguments that don't help solve the task
+                
+                Consider:
+                - Are the search keywords relevant to the query?
+                - Is the agent reading emails that are likely to contain the answer?
+                - Is the agent making redundant tool calls?
+                - Is the final answer being returned at an appropriate time?
+                """
+            )
+            
+            user_message = dedent(
+                f"""
+                **User Query:** {user_query}
+                
+                **Conversation History:**
+                {history_str}
+                
+                **Tool Call Made:**
+                Tool: {tool_name}
+                Arguments: {tool_args}
+                
+                **Tool Result:**
+                {tool_result[:500]}{'...' if len(tool_result) > 500 else ''}
+                
+                Evaluate whether this tool call was appropriate.
+                """
+            )
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+            
+            response = await acompletion(
+                model=self.judge_model,
+                messages=messages,
+                response_format=ToolUsageJudgeResponse,
+            )
+            
+            first_choice = response.choices[0]
+            raw_content = first_choice.message.content or "{}"
+            
+            try:
+                return ToolUsageJudgeResponse.model_validate_json(raw_content)
+            except Exception as e:
+                return ToolUsageJudgeResponse(
+                    reasoning=f"Parse error: {e}\nRaw: {raw_content}",
+                    appropriate=False,
+                    label="incorrect"
+                )
         
-        # Count tool calls by type
-        search_calls = 0
-        read_calls = 0
-        completed = False
-        total_tool_calls = 0
+        try:
+            judge_response = await _judge_with_retry()
+            return {
+                "appropriate": float(judge_response.appropriate),
+                "label": judge_response.label,
+                "reasoning": judge_response.reasoning
+            }
+        except Exception as e:
+            return {
+                "appropriate": 0.0,
+                "label": "error",
+                "reasoning": f"Failed to get judgment after {self.max_retries} attempts: {str(e)}"
+            }
+    
+    @weave.op()
+    async def score_no_tool_call(
+        self,
+        conversation_history: list,
+        assistant_response: str,
+        user_query: str
+    ) -> dict:
+        """Score when the agent chose NOT to make a tool call.
         
-        for msg in messages:
-            # Check if this is an assistant message with tool calls
-            if isinstance(msg, dict):
-                tool_calls = msg.get('tool_calls', [])
-                if tool_calls:
-                    for tool_call in tool_calls:
-                        total_tool_calls += 1
-                        tool_name = tool_call.get('function', {}).get('name', '')
-                        if tool_name == 'search_inbox':
-                            search_calls += 1
-                        elif tool_name == 'read_email':
-                            read_calls += 1
-                        elif tool_name == 'return_final_answer':
-                            completed = True
-            # Handle message objects with attributes
-            elif hasattr(msg, 'message') and hasattr(msg.message, 'tool_calls'):
-                tool_calls = msg.message.tool_calls or []
-                for tool_call in tool_calls:
-                    total_tool_calls += 1
-                    tool_name = tool_call.function.name
-                    if tool_name == 'search_inbox':
-                        search_calls += 1
-                    elif tool_name == 'read_email':
-                        read_calls += 1
-                    elif tool_name == 'return_final_answer':
-                        completed = True
+        Args:
+            conversation_history: List of messages leading up to this response
+            assistant_response: The text response the agent provided instead of calling a tool
+            user_query: The original user query/question
+            
+        Returns:
+            Dict containing:
+                - appropriate: Boolean score (1.0 if not calling a tool was appropriate, 0.0 if not)
+                - label: Categorization ('optimal', 'suboptimal', or 'incorrect')
+                - reasoning: Explanation of the judgment
+        """
+        @retry(stop=stop_after_attempt(self.max_retries))
+        async def _judge_with_retry():
+            # Format conversation history for the judge
+            history_str = ""
+            for msg in conversation_history[-5:]:  # Last 5 messages for context
+                if isinstance(msg, dict):
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')
+                    if role == 'system':
+                        history_str += f"[SYSTEM]: {content[:200]}...\n" if len(content) > 200 else f"[SYSTEM]: {content}\n"
+                    elif role == 'user':
+                        history_str += f"[USER]: {content}\n"
+                    elif role == 'assistant':
+                        history_str += f"[ASSISTANT]: {content}\n"
+                    elif role == 'tool':
+                        tool_name_msg = msg.get('name', 'unknown')
+                        history_str += f"[TOOL-{tool_name_msg}]: {content[:200]}...\n" if len(content) > 200 else f"[TOOL-{tool_name_msg}]: {content}\n"
+            
+            system_prompt = dedent(
+                """
+                You are evaluating whether an AI agent made an appropriate decision by NOT calling a tool.
+                
+                The agent has access to three tools:
+                1. search_inbox(keywords: list[str]) - Search for emails matching keywords
+                2. read_email(message_id: str) - Read the full content of a specific email
+                3. return_final_answer(answer: str, reference_message_ids: list[str]) - Return the final answer
+                
+                The agent chose to respond with text instead of calling a tool. Your task is to evaluate whether this was appropriate given:
+                - The user's original query
+                - The conversation history so far
+                - The text response the agent provided
+                
+                Categorize the decision as:
+                - "optimal": Not calling a tool was the best choice (e.g., the task is already complete, or clarification is needed)
+                - "suboptimal": Not ideal but acceptable (e.g., could have made progress with a tool call but the response isn't harmful)
+                - "incorrect": The agent should have called a tool (e.g., needs to search for emails, read specific emails, or return a final answer)
+                
+                Consider:
+                - Does the agent need to search for more information?
+                - Should the agent be reading specific emails that were mentioned?
+                - Should the agent return a final answer with the return_final_answer tool?
+                - Is the agent stuck or making no progress toward solving the task?
+                """
+            )
+            
+            user_message = dedent(
+                f"""
+                **User Query:** {user_query}
+                
+                **Conversation History:**
+                {history_str}
+                
+                **Agent's Decision:**
+                The agent chose NOT to call any tool and instead responded with: "{assistant_response[:300]}{'...' if len(assistant_response) > 300 else ''}"
+                
+                Evaluate whether this decision (not calling a tool) was appropriate.
+                """
+            )
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+            
+            response = await acompletion(
+                model=self.judge_model,
+                messages=messages,
+                response_format=ToolUsageJudgeResponse,
+            )
+            
+            first_choice = response.choices[0]
+            raw_content = first_choice.message.content or "{}"
+            
+            try:
+                return ToolUsageJudgeResponse.model_validate_json(raw_content)
+            except Exception as e:
+                return ToolUsageJudgeResponse(
+                    reasoning=f"Parse error: {e}\nRaw: {raw_content}",
+                    appropriate=False,
+                    label="incorrect"
+                )
         
-        # Calculate efficiency (penalize excessive tool calls)
-        # Efficiency is 1.0 if within expected range, decreases with more calls
-        if total_tool_calls <= self.max_expected_calls:
-            efficiency = 1.0
-        else:
-            excess_calls = total_tool_calls - self.max_expected_calls
-            efficiency = 1.0 / (1 + (excess_calls / self.max_expected_calls))
-        
-        # Check if essential tools were used
-        used_search = search_calls > 0
-        
-        return {
-            "total_tool_calls": float(total_tool_calls),
-            "search_calls": float(search_calls),
-            "read_calls": float(read_calls),
-            "completed_task": float(completed),
-            "tool_efficiency": efficiency,
-            "used_search": float(used_search)
-        }
+        try:
+            judge_response = await _judge_with_retry()
+            return {
+                "appropriate": float(judge_response.appropriate),
+                "label": judge_response.label,
+                "reasoning": judge_response.reasoning
+            }
+        except Exception as e:
+            return {
+                "appropriate": 0.0,
+                "label": "error",
+                "reasoning": f"Failed to get judgment after {self.max_retries} attempts: {str(e)}"
+            }
 
 
 class ProjectTrajectory(art.Trajectory):
     final_answer: FinalAnswer | None = None
+    tool_evaluations: list[dict] = []  # Store LLM judge evaluations for each tool call
 
 
 class EmailScenario(BaseModel):
@@ -318,11 +496,48 @@ class EmailScenario(BaseModel):
     scenario: Scenario
 
 
+def _add_tool_usage_metrics(traj: ProjectTrajectory):
+    """Add aggregate tool usage metrics from individual tool evaluations.
+    
+    Args:
+        traj: The trajectory to add metrics to
+    """
+    if not traj.tool_evaluations:
+        traj.metrics["total_decisions_evaluated"] = 0.0
+        traj.metrics["actual_tool_calls"] = 0.0
+        traj.metrics["no_tool_call_instances"] = 0.0
+        traj.metrics["tool_appropriate_rate"] = 0.0
+        traj.metrics["tool_optimal_rate"] = 0.0
+        return
+    
+    # Count tool calls by appropriateness
+    total = len(traj.tool_evaluations)
+    appropriate_count = sum(1 for eval in traj.tool_evaluations if eval["appropriate"] == 1.0)
+    optimal_count = sum(1 for eval in traj.tool_evaluations if eval["label"] == "optimal")
+    suboptimal_count = sum(1 for eval in traj.tool_evaluations if eval["label"] == "suboptimal")
+    incorrect_count = sum(1 for eval in traj.tool_evaluations if eval["label"] == "incorrect")
+    
+    # Count actual tool calls vs no tool calls
+    actual_tool_calls = sum(1 for eval in traj.tool_evaluations if eval["tool_name"] != "NO_TOOL_CALL")
+    no_tool_call_count = sum(1 for eval in traj.tool_evaluations if eval["tool_name"] == "NO_TOOL_CALL")
+    
+    # Add aggregate metrics
+    traj.metrics["total_decisions_evaluated"] = float(total)
+    traj.metrics["actual_tool_calls"] = float(actual_tool_calls)
+    traj.metrics["no_tool_call_instances"] = float(no_tool_call_count)
+    traj.metrics["tool_appropriate_rate"] = appropriate_count / total if total > 0 else 0.0
+    traj.metrics["tool_optimal_rate"] = optimal_count / total if total > 0 else 0.0
+    traj.metrics["tool_optimal_count"] = float(optimal_count)
+    traj.metrics["tool_suboptimal_count"] = float(suboptimal_count)
+    traj.metrics["tool_incorrect_count"] = float(incorrect_count)
+
+
 @weave.op
 async def rollout(
     model: art.Model, 
     email_scenario: EmailScenario,
-    correctness_judge_model: str = "openai/gpt-4.1"
+    correctness_judge_model: str = "openai/gpt-4.1",
+    tool_judge_model: str = "openai/gpt-4.1"
 ) -> ProjectTrajectory:
     """
     Execute a rollout of the email search agent on a given scenario.
@@ -331,6 +546,7 @@ async def rollout(
         model: The ART model to use for inference
         email_scenario: The email scenario to process
         correctness_judge_model: The model to use for judging answer correctness
+        tool_judge_model: The model to use for judging tool call appropriateness
         
     Returns:
         A ProjectTrajectory containing the agent's conversation and results
@@ -384,6 +600,9 @@ async def rollout(
         base_url=model.inference_base_url,
         api_key=model.inference_api_key,
     )
+    
+    # Initialize tool usage scorer for evaluating each tool call
+    tool_scorer = ToolUsageScorer(judge_model=tool_judge_model)
 
     for _ in range(MAX_TURNS):
         response = await client.chat.completions.create(
@@ -397,6 +616,25 @@ async def rollout(
         traj.messages_and_choices.append(response.choices[0])
 
         if not response_message.tool_calls:
+            # Evaluate the decision to NOT make a tool call
+            assistant_text = response_message.content or ""
+            no_tool_evaluation = await tool_scorer.score_no_tool_call(
+                conversation_history=traj.messages(),
+                assistant_response=assistant_text,
+                user_query=scenario.question
+            )
+            
+            # Store the evaluation
+            traj.tool_evaluations.append({
+                "tool_name": "NO_TOOL_CALL",
+                "tool_args": f"text_response: {assistant_text[:100]}",
+                "appropriate": no_tool_evaluation["appropriate"],
+                "label": no_tool_evaluation["label"],
+                "reasoning": no_tool_evaluation["reasoning"]
+            })
+            
+            # Add metrics and return
+            _add_tool_usage_metrics(traj)
             return traj
 
         try:
@@ -406,14 +644,36 @@ async def rollout(
                     tool_args = json.loads(tool_call.function.arguments)
                     tool_to_call = tools_by_name[tool_name]
                     result = tool_to_call(**tool_args)
+                    result_str = str(result)
+                    
                     traj.messages_and_choices.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": tool_name,
-                            "content": str(result),
+                            "content": result_str,
                         }
                     )
+                    
+                    # Evaluate this tool call using the LLM judge
+                    tool_evaluation = await tool_scorer.score(
+                        conversation_history=traj.messages(),
+                        tool_call={
+                            "name": tool_name,
+                            "arguments": tool_call.function.arguments
+                        },
+                        tool_result=result_str,
+                        user_query=scenario.question
+                    )
+                    
+                    # Store the evaluation with metadata
+                    traj.tool_evaluations.append({
+                        "tool_name": tool_name,
+                        "tool_args": tool_call.function.arguments,
+                        "appropriate": tool_evaluation["appropriate"],
+                        "label": tool_evaluation["label"],
+                        "reasoning": tool_evaluation["reasoning"]
+                    })
 
                     if tool_name == "return_final_answer":
                         traj.final_answer = result
@@ -439,35 +699,17 @@ async def rollout(
                             traj.metrics["source_recall"] = source_result["source_recall"]
                             traj.metrics["source_f1"] = source_result["source_f1"]
                             traj.metrics["retrieved_correct_sources"] = source_result["retrieved_correct_sources"]
-                            
-                            # Score tool usage quality
-                            tool_scorer = ToolUsageScorer(max_expected_calls=MAX_TURNS * 2)
-                            tool_result = await tool_scorer.score(
-                                trajectory={"messages_and_choices": traj.messages_and_choices}
-                            )
-                            traj.metrics["total_tool_calls"] = tool_result["total_tool_calls"]
-                            traj.metrics["search_calls"] = tool_result["search_calls"]
-                            traj.metrics["read_calls"] = tool_result["read_calls"]
-                            traj.metrics["completed_task"] = tool_result["completed_task"]
-                            traj.metrics["tool_efficiency"] = tool_result["tool_efficiency"]
-                            traj.metrics["used_search"] = tool_result["used_search"]
+                        
+                        # Add aggregate tool usage metrics
+                        _add_tool_usage_metrics(traj)
                         return traj
         except Exception as e:
             print(f"Error executing tool call: {e}")
+            _add_tool_usage_metrics(traj)
             return traj
 
-    # Score tool usage even if task wasn't completed (ran out of turns)
-    tool_scorer = ToolUsageScorer(max_expected_calls=MAX_TURNS * 2)
-    tool_result = await tool_scorer.score(
-        trajectory={"messages_and_choices": traj.messages_and_choices}
-    )
-    traj.metrics["total_tool_calls"] = tool_result["total_tool_calls"]
-    traj.metrics["search_calls"] = tool_result["search_calls"]
-    traj.metrics["read_calls"] = tool_result["read_calls"]
-    traj.metrics["completed_task"] = tool_result["completed_task"]
-    traj.metrics["tool_efficiency"] = tool_result["tool_efficiency"]
-    traj.metrics["used_search"] = tool_result["used_search"]
-    
+    # Add aggregate tool usage metrics even if task wasn't completed (ran out of turns)
+    _add_tool_usage_metrics(traj)
     return traj
 
 
