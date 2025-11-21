@@ -44,8 +44,6 @@ async def main(config_path: str = "config.yaml"):
     with open(config_file, 'r') as f:
         training_config = yaml.safe_load(f)
     
-    print(f"Loaded configuration from {config_path}")
-    
     # Set random seed for reproducibility
     random.seed(training_config.get("random_seed", 42))
     
@@ -56,9 +54,6 @@ async def main(config_path: str = "config.yaml"):
         config=training_config,
         job_type=training_config.get("wandb_job_type", "train"),
     )
-    
-    print(f"W&B run initialized: {run.url}")
-    print(f"Training configuration: {dict(run.config)}")
     
     # Declare the model
     model = art.TrainableModel(
@@ -77,27 +72,21 @@ async def main(config_path: str = "config.yaml"):
     # Initialize Weave for logging
     initialize_weave(model.project)
 
-    print("Model registered and Weave initialized!")
-
     # Load training dataset from W&B artifact
-    print(f"Loading training dataset artifact: {run.config.training_dataset_artifact}")
     training_artifact = run.use_artifact(run.config.training_dataset_artifact)
     training_dir = training_artifact.download()
     
     with open(Path(training_dir) / "training_scenarios.json", "r") as f:
         training_data = json.load(f)
     training_scenarios = [Scenario(**scenario) for scenario in training_data]
-    print(f"Loaded {len(training_scenarios)} training scenarios")
     
     # Load validation dataset from W&B artifact
-    print(f"Loading validation dataset artifact: {run.config.validation_dataset_artifact}")
     validation_artifact = run.use_artifact(run.config.validation_dataset_artifact)
     validation_dir = validation_artifact.download()
     
     with open(Path(validation_dir) / "validation_scenarios.json", "r") as f:
         validation_data = json.load(f)
     validation_scenarios = [Scenario(**scenario) for scenario in validation_data]
-    print(f"Loaded {len(validation_scenarios)} validation scenarios")
 
     # Use iterate_dataset with real training scenarios
     training_iterator = iterate_dataset(
@@ -109,11 +98,6 @@ async def main(config_path: str = "config.yaml"):
 
     # Main training loop
     for batch in training_iterator:
-        print(
-            f"Training step {batch.step}, epoch {batch.epoch}, epoch step {batch.epoch_step}"
-        )
-        print(f"Batch contains {len(batch.items)} scenarios")
-
         # Create trajectory groups for this batch
         train_groups = []
         for scenario in batch.items:
@@ -145,7 +129,6 @@ async def main(config_path: str = "config.yaml"):
 
         # Run validation at specified intervals
         if batch.step % run.config.validation_step_interval == 0:
-            print(f"Running validation at step {batch.step}")
             validation_groups = []
             for scenario in validation_scenarios:
                 validation_groups.append(
@@ -174,8 +157,6 @@ async def main(config_path: str = "config.yaml"):
             judged_groups,
             config=art.TrainConfig(learning_rate=run.config.learning_rate),
         )
-
-        print(f"Completed training step {batch.step}")
         
         # Save checkpoint metadata as W&B artifact if enabled
         if run.config.get("save_checkpoint_artifact", True):
@@ -201,14 +182,9 @@ async def main(config_path: str = "config.yaml"):
             # Note: The actual checkpoint files are managed by the ART ServerlessBackend
             # This artifact records checkpoint metadata and training configuration
             run.log_artifact(checkpoint_artifact)
-            print(f"Logged checkpoint artifact for step {current_step}")
 
-    print("\n🎉 Training completed successfully!")
-    print(f"Model checkpoint available at step {await model.get_step()}")
-    
     # Finish the W&B run
     run.finish()
-    print("W&B run finished and logged.")
 
 
 if __name__ == "__main__":
