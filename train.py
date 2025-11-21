@@ -146,11 +146,75 @@ async def main(config_path: str = "config.yaml"):
                 pbar_desc="validation",
                 max_exceptions=run.config.rollouts_per_group * len(validation_scenarios),
             )
+            
+            # Apply RULER scoring to validation groups to get rewards
+            judged_validation_groups = []
+            for group in finished_validation_groups:
+                judged_group = await ruler_score_group(group, run.config.ruler_judge_model, debug=True)
+                judged_validation_groups.append(judged_group)
 
             await model.log(
-                finished_validation_groups,
+                judged_validation_groups,
                 split="val"
             )
+            
+            # Create validation results table
+            validation_table_data = []
+            for scenario, group in zip(validation_scenarios, judged_validation_groups):
+                # Get the first (and only) trajectory from the group
+                if len(group.trajectories) > 0:
+                    traj = group.trajectories[0]
+                    
+                    # Extract model output
+                    model_output = traj.final_answer.answer if traj.final_answer else ""
+                    source_ids = str(traj.final_answer.source_ids) if traj.final_answer else "[]"
+                    
+                    # Extract judge results
+                    judge_correct = traj.metrics.get("correct", 0.0)
+                    judge_reasoning = traj.metadata.get("judge_reasoning", "")
+                    
+                    # Extract ruler reward
+                    ruler_reward = traj.reward
+                    
+                    # Add row with all original columns plus new ones
+                    validation_table_data.append([
+                        scenario.id,
+                        scenario.question,
+                        scenario.answer,
+                        str(scenario.message_ids),
+                        scenario.how_realistic,
+                        scenario.inbox_address,
+                        scenario.query_date,
+                        scenario.split,
+                        model_output,
+                        source_ids,
+                        judge_correct,
+                        judge_reasoning,
+                        ruler_reward,
+                        batch.step
+                    ])
+            
+            # Create and log the table
+            validation_table = wandb.Table(
+                columns=[
+                    "id",
+                    "question",
+                    "expected_answer",
+                    "expected_message_ids",
+                    "how_realistic",
+                    "inbox_address",
+                    "query_date",
+                    "split",
+                    "model_output",
+                    "model_source_ids",
+                    "judge_correct",
+                    "judge_reasoning",
+                    "ruler_reward",
+                    "training_step"
+                ],
+                data=validation_table_data
+            )
+            run.log({f"validation_results_step_{batch.step}": validation_table})
         
         # Train the model on the judged trajectories
         await model.train(

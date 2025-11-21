@@ -13,7 +13,13 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from litellm import acompletion
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
-from tenacity import retry, stop_after_attempt
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential_jitter,
+    retry_if_exception_type,
+)
+from openai import RateLimitError
 
 import art
 from art.utils.strip_logprobs import strip_logprobs
@@ -162,7 +168,11 @@ class CorrectnessJudgeScorer(weave.Scorer):
                 - reasoning: Explanation of the judge's decision
                 - accept: Whether the answer should be accepted
         """
-        @retry(stop=stop_after_attempt(self.max_retries))
+        @retry(
+            stop=stop_after_attempt(self.max_retries),
+            wait=wait_exponential_jitter(initial=1, max=60, jitter=5),
+            retry=retry_if_exception_type((RateLimitError, Exception)),
+        )
         async def _judge_with_retry():
             # Use Weave-managed prompt
             system_prompt = CORRECTNESS_JUDGE_PROMPT.format()
@@ -323,7 +333,11 @@ class ToolUsageScorer(weave.Scorer):
                 - label: Categorization ('optimal', 'suboptimal', or 'incorrect')
                 - reasoning: Explanation of the judgment
         """
-        @retry(stop=stop_after_attempt(self.max_retries))
+        @retry(
+            stop=stop_after_attempt(self.max_retries),
+            wait=wait_exponential_jitter(initial=1, max=60, jitter=5),
+            retry=retry_if_exception_type((RateLimitError, Exception)),
+        )
         async def _judge_with_retry():
             # Extract tool call information
             if isinstance(tool_call, dict):
@@ -427,7 +441,11 @@ class ToolUsageScorer(weave.Scorer):
                 - label: Categorization ('optimal', 'suboptimal', or 'incorrect')
                 - reasoning: Explanation of the judgment
         """
-        @retry(stop=stop_after_attempt(self.max_retries))
+        @retry(
+            stop=stop_after_attempt(self.max_retries),
+            wait=wait_exponential_jitter(initial=1, max=60, jitter=5),
+            retry=retry_if_exception_type((RateLimitError, Exception)),
+        )
         async def _judge_with_retry():
             # Format conversation history for the judge
             history_str = ""
@@ -684,7 +702,8 @@ async def rollout(
                                 reference_answer=scenario.answer
                             )
                             traj.metrics["correct"] = correctness_result["correct"]
-                            traj.metrics["reasoning"] = correctness_result["reasoning"]
+                            # Store reasoning in metadata (not metrics) since it's a string
+                            traj.metadata["judge_reasoning"] = correctness_result["reasoning"]
                             
                             # Score source retrieval quality
                             source_scorer = SourceRetrievalScorer()
