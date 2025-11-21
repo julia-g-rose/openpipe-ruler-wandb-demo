@@ -142,6 +142,173 @@ class CorrectnessJudgeScorer(weave.Scorer):
             }
 
 
+class SourceRetrievalScorer(weave.Scorer):
+    """Weave Scorer for evaluating whether the agent retrieved the correct source emails.
+    
+    This scorer checks if the agent's final answer references the correct source
+    email IDs that were expected for the scenario. It evaluates the quality of
+    the agent's search and retrieval strategy.
+    
+    Metrics returned:
+        - source_precision: Precision of retrieved sources (correct / total retrieved)
+        - source_recall: Recall of retrieved sources (correct / total expected)
+        - source_f1: F1 score combining precision and recall
+        - retrieved_correct_sources: Whether all expected sources were retrieved
+    """
+    
+    @weave.op()
+    async def score(
+        self,
+        output: dict,  # Should contain 'source_ids' key
+        expected_source_ids: list[str]
+    ) -> dict:
+        """Score the source retrieval quality.
+        
+        Args:
+            output: Dict containing the agent's output, must have 'source_ids' key
+            expected_source_ids: List of expected message IDs that should be retrieved
+            
+        Returns:
+            Dict containing precision, recall, F1, and correctness metrics
+        """
+        # Extract source IDs from output
+        if isinstance(output, dict):
+            retrieved_ids = set(output.get('source_ids', []))
+        elif hasattr(output, 'source_ids'):
+            retrieved_ids = set(output.source_ids)
+        else:
+            # No sources retrieved
+            retrieved_ids = set()
+        
+        expected_ids = set(expected_source_ids)
+        
+        # Calculate metrics
+        if len(retrieved_ids) == 0:
+            precision = 0.0
+        else:
+            correct_retrievals = retrieved_ids.intersection(expected_ids)
+            precision = len(correct_retrievals) / len(retrieved_ids)
+        
+        if len(expected_ids) == 0:
+            recall = 1.0 if len(retrieved_ids) == 0 else 0.0
+        else:
+            correct_retrievals = retrieved_ids.intersection(expected_ids)
+            recall = len(correct_retrievals) / len(expected_ids)
+        
+        # F1 score
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * (precision * recall) / (precision + recall)
+        
+        # Check if all expected sources were retrieved (perfect recall)
+        retrieved_all = recall == 1.0
+        
+        return {
+            "source_precision": precision,
+            "source_recall": recall,
+            "source_f1": f1,
+            "retrieved_correct_sources": float(retrieved_all)
+        }
+
+
+class ToolUsageScorer(weave.Scorer):
+    """Weave Scorer for evaluating the quality and efficiency of tool usage.
+    
+    This scorer analyzes the agent's tool call sequence to evaluate whether it:
+    - Used tools appropriately and efficiently
+    - Made necessary searches and email reads
+    - Avoided excessive or redundant tool calls
+    - Successfully completed with a final answer
+    
+    Available tools: search_inbox, read_email, return_final_answer
+    
+    Metrics returned:
+        - total_tool_calls: Total number of tool calls made
+        - search_calls: Number of search_inbox calls
+        - read_calls: Number of read_email calls  
+        - completed_task: Whether return_final_answer was called (1.0 or 0.0)
+        - tool_efficiency: Efficiency score (1.0 / (1 + excess_calls))
+        - used_search: Whether search was used at least once (1.0 or 0.0)
+    """
+    
+    max_expected_calls: int = 10  # Configurable threshold for "efficient" usage
+    
+    @weave.op()
+    async def score(
+        self,
+        trajectory: dict  # Should contain 'messages_and_choices' key with tool call info
+    ) -> dict:
+        """Score the tool usage quality from a trajectory.
+        
+        Args:
+            trajectory: Dict containing the agent's trajectory with messages and tool calls
+            
+        Returns:
+            Dict containing tool usage metrics
+        """
+        # Extract messages from trajectory
+        if isinstance(trajectory, dict):
+            messages = trajectory.get('messages_and_choices', [])
+        elif hasattr(trajectory, 'messages_and_choices'):
+            messages = trajectory.messages_and_choices
+        else:
+            messages = []
+        
+        # Count tool calls by type
+        search_calls = 0
+        read_calls = 0
+        completed = False
+        total_tool_calls = 0
+        
+        for msg in messages:
+            # Check if this is an assistant message with tool calls
+            if isinstance(msg, dict):
+                tool_calls = msg.get('tool_calls', [])
+                if tool_calls:
+                    for tool_call in tool_calls:
+                        total_tool_calls += 1
+                        tool_name = tool_call.get('function', {}).get('name', '')
+                        if tool_name == 'search_inbox':
+                            search_calls += 1
+                        elif tool_name == 'read_email':
+                            read_calls += 1
+                        elif tool_name == 'return_final_answer':
+                            completed = True
+            # Handle message objects with attributes
+            elif hasattr(msg, 'message') and hasattr(msg.message, 'tool_calls'):
+                tool_calls = msg.message.tool_calls or []
+                for tool_call in tool_calls:
+                    total_tool_calls += 1
+                    tool_name = tool_call.function.name
+                    if tool_name == 'search_inbox':
+                        search_calls += 1
+                    elif tool_name == 'read_email':
+                        read_calls += 1
+                    elif tool_name == 'return_final_answer':
+                        completed = True
+        
+        # Calculate efficiency (penalize excessive tool calls)
+        # Efficiency is 1.0 if within expected range, decreases with more calls
+        if total_tool_calls <= self.max_expected_calls:
+            efficiency = 1.0
+        else:
+            excess_calls = total_tool_calls - self.max_expected_calls
+            efficiency = 1.0 / (1 + (excess_calls / self.max_expected_calls))
+        
+        # Check if essential tools were used
+        used_search = search_calls > 0
+        
+        return {
+            "total_tool_calls": float(total_tool_calls),
+            "search_calls": float(search_calls),
+            "read_calls": float(read_calls),
+            "completed_task": float(completed),
+            "tool_efficiency": efficiency,
+            "used_search": float(used_search)
+        }
+
+
 class ProjectTrajectory(art.Trajectory):
     final_answer: FinalAnswer | None = None
 
@@ -250,21 +417,57 @@ async def rollout(
 
                     if tool_name == "return_final_answer":
                         traj.final_answer = result
-                        # Score the trajectory using the Weave scorer
+                        # Score the trajectory using Weave scorers
                         if traj.final_answer:
-                            scorer = CorrectnessJudgeScorer(judge_model=correctness_judge_model)
-                            score_result = await scorer.score(
+                            # Score answer correctness
+                            correctness_scorer = CorrectnessJudgeScorer(judge_model=correctness_judge_model)
+                            correctness_result = await correctness_scorer.score(
                                 output=traj.final_answer.answer,
                                 question=scenario.question,
                                 reference_answer=scenario.answer
                             )
-                            traj.metrics["correct"] = score_result["correct"]
-                            traj.metrics["reasoning"] = score_result["reasoning"]
+                            traj.metrics["correct"] = correctness_result["correct"]
+                            traj.metrics["reasoning"] = correctness_result["reasoning"]
+                            
+                            # Score source retrieval quality
+                            source_scorer = SourceRetrievalScorer()
+                            source_result = await source_scorer.score(
+                                output={"source_ids": traj.final_answer.source_ids},
+                                expected_source_ids=scenario.message_ids
+                            )
+                            traj.metrics["source_precision"] = source_result["source_precision"]
+                            traj.metrics["source_recall"] = source_result["source_recall"]
+                            traj.metrics["source_f1"] = source_result["source_f1"]
+                            traj.metrics["retrieved_correct_sources"] = source_result["retrieved_correct_sources"]
+                            
+                            # Score tool usage quality
+                            tool_scorer = ToolUsageScorer(max_expected_calls=MAX_TURNS * 2)
+                            tool_result = await tool_scorer.score(
+                                trajectory={"messages_and_choices": traj.messages_and_choices}
+                            )
+                            traj.metrics["total_tool_calls"] = tool_result["total_tool_calls"]
+                            traj.metrics["search_calls"] = tool_result["search_calls"]
+                            traj.metrics["read_calls"] = tool_result["read_calls"]
+                            traj.metrics["completed_task"] = tool_result["completed_task"]
+                            traj.metrics["tool_efficiency"] = tool_result["tool_efficiency"]
+                            traj.metrics["used_search"] = tool_result["used_search"]
                         return traj
         except Exception as e:
             print(f"Error executing tool call: {e}")
             return traj
 
+    # Score tool usage even if task wasn't completed (ran out of turns)
+    tool_scorer = ToolUsageScorer(max_expected_calls=MAX_TURNS * 2)
+    tool_result = await tool_scorer.score(
+        trajectory={"messages_and_choices": traj.messages_and_choices}
+    )
+    traj.metrics["total_tool_calls"] = tool_result["total_tool_calls"]
+    traj.metrics["search_calls"] = tool_result["search_calls"]
+    traj.metrics["read_calls"] = tool_result["read_calls"]
+    traj.metrics["completed_task"] = tool_result["completed_task"]
+    traj.metrics["tool_efficiency"] = tool_result["tool_efficiency"]
+    traj.metrics["used_search"] = tool_result["used_search"]
+    
     return traj
 
 
