@@ -517,9 +517,6 @@ def _add_tool_usage_metrics(traj: ProjectTrajectory):
         traj: The trajectory to add metrics to
     """
     if not traj.tool_evaluations:
-        traj.metrics["total_decisions_evaluated"] = 0.0
-        traj.metrics["actual_tool_calls"] = 0.0
-        traj.metrics["no_tool_call_instances"] = 0.0
         traj.metrics["tool_appropriate_rate"] = 0.0
         traj.metrics["tool_optimal_rate"] = 0.0
         return
@@ -528,22 +525,10 @@ def _add_tool_usage_metrics(traj: ProjectTrajectory):
     total = len(traj.tool_evaluations)
     appropriate_count = sum(1 for eval in traj.tool_evaluations if eval["appropriate"] == 1.0)
     optimal_count = sum(1 for eval in traj.tool_evaluations if eval["label"] == "optimal")
-    suboptimal_count = sum(1 for eval in traj.tool_evaluations if eval["label"] == "suboptimal")
-    incorrect_count = sum(1 for eval in traj.tool_evaluations if eval["label"] == "incorrect")
-    
-    # Count actual tool calls vs no tool calls
-    actual_tool_calls = sum(1 for eval in traj.tool_evaluations if eval["tool_name"] != "NO_TOOL_CALL")
-    no_tool_call_count = sum(1 for eval in traj.tool_evaluations if eval["tool_name"] == "NO_TOOL_CALL")
     
     # Add aggregate metrics
-    traj.metrics["total_decisions_evaluated"] = float(total)
-    traj.metrics["actual_tool_calls"] = float(actual_tool_calls)
-    traj.metrics["no_tool_call_instances"] = float(no_tool_call_count)
     traj.metrics["tool_appropriate_rate"] = appropriate_count / total if total > 0 else 0.0
     traj.metrics["tool_optimal_rate"] = optimal_count / total if total > 0 else 0.0
-    traj.metrics["tool_optimal_count"] = float(optimal_count)
-    traj.metrics["tool_suboptimal_count"] = float(suboptimal_count)
-    traj.metrics["tool_incorrect_count"] = float(incorrect_count)
 
 
 @weave.op

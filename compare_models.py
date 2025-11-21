@@ -2,8 +2,8 @@
 Model comparison script using Weave evaluations and leaderboards.
 
 This script compares three models using the three Weave scorers:
-1. gpt-4o-mini (OpenAI)
-2. gpt-4o (OpenAI)
+1. Model 1 (configurable, default: gpt-4o-mini)
+2. Model 2 (configurable, default: gpt-5)
 3. OpenPipe/Qwen base model (before fine-tuning)
 
 It uses Weave's evaluation framework to run all scorers on the validation dataset
@@ -67,8 +67,8 @@ class WeaveModelWrapper(weave.Model):
     
     model: Any
     model_name: str
-    correctness_judge_model: str = "openai/gpt-4o"
-    tool_judge_model: str = "openai/gpt-4o"
+    correctness_judge_model: str
+    tool_judge_model: str
     
     @weave.op()
     async def predict(self, scenario: dict) -> dict:
@@ -108,8 +108,8 @@ class OpenAIModelWrapper(weave.Model):
     """Wrapper for OpenAI models to work with Weave evaluations."""
     
     model_name: str
-    correctness_judge_model: str = "openai/gpt-4o"
-    tool_judge_model: str = "openai/gpt-4o"
+    correctness_judge_model: str
+    tool_judge_model: str
     
     @weave.op()
     async def predict(self, scenario: dict) -> dict:
@@ -147,28 +147,39 @@ class OpenAIModelWrapper(weave.Model):
 # Weave-compatible scorer wrappers that use the actual scorer classes from helpers.py
 # These run the real scoring logic instead of just extracting pre-computed metrics
 
-@weave.op()
-async def score_correctness(model_output: dict) -> dict:
-    """Score answer correctness using CorrectnessJudgeScorer from helpers.py.
+def create_correctness_scorer(judge_model: str):
+    """Factory function to create a correctness scorer with the specified judge model.
     
-    This uses the actual scoring logic defined in helpers.CorrectnessJudgeScorer
-    (line 132) rather than extracting pre-computed metrics.
+    Args:
+        judge_model: The model to use for judging correctness (from config)
+    
+    Returns:
+        A weave.op decorated async function for scoring correctness
     """
-    trajectory = model_output.get("trajectory")
-    scenario = model_output.get("scenario")
-    answer = model_output.get("answer", "")
+    @weave.op()
+    async def score_correctness(model_output: dict) -> dict:
+        """Score answer correctness using CorrectnessJudgeScorer from helpers.py.
+        
+        This uses the actual scoring logic defined in helpers.CorrectnessJudgeScorer
+        (line 132) rather than extracting pre-computed metrics.
+        """
+        trajectory = model_output.get("trajectory")
+        scenario = model_output.get("scenario")
+        answer = model_output.get("answer", "")
+        
+        if not scenario:
+            return {"correct": 0.0, "reasoning": "Missing scenario data"}
+        
+        # Initialize and use the actual scorer from helpers.py
+        correctness_scorer = CorrectnessJudgeScorer(judge_model=judge_model)
+        result = await correctness_scorer.score(
+            output=answer,
+            question=scenario.question,
+            reference_answer=scenario.answer
+        )
+        return result
     
-    if not scenario:
-        return {"correct": 0.0, "reasoning": "Missing scenario data"}
-    
-    # Initialize and use the actual scorer from helpers.py
-    correctness_scorer = CorrectnessJudgeScorer(judge_model="openai/gpt-4o")
-    result = await correctness_scorer.score(
-        output=answer,
-        question=scenario.question,
-        reference_answer=scenario.answer
-    )
-    return result
+    return score_correctness
 
 
 @weave.op()
@@ -212,36 +223,18 @@ def score_tool_usage(model_output: dict) -> dict:
     
     if not trajectory or not trajectory.tool_evaluations:
         return {
-            "total_decisions_evaluated": 0.0,
-            "actual_tool_calls": 0.0,
-            "no_tool_call_instances": 0.0,
             "tool_appropriate_rate": 0.0,
-            "tool_optimal_rate": 0.0,
-            "tool_optimal_count": 0.0,
-            "tool_suboptimal_count": 0.0,
-            "tool_incorrect_count": 0.0
+            "tool_optimal_rate": 0.0
         }
     
     # Aggregate tool evaluations using the same logic as _add_tool_usage_metrics
     total = len(trajectory.tool_evaluations)
     appropriate_count = sum(1 for eval in trajectory.tool_evaluations if eval["appropriate"] == 1.0)
     optimal_count = sum(1 for eval in trajectory.tool_evaluations if eval["label"] == "optimal")
-    suboptimal_count = sum(1 for eval in trajectory.tool_evaluations if eval["label"] == "suboptimal")
-    incorrect_count = sum(1 for eval in trajectory.tool_evaluations if eval["label"] == "incorrect")
-    
-    # Count actual tool calls vs no tool calls
-    actual_tool_calls = sum(1 for eval in trajectory.tool_evaluations if eval["tool_name"] != "NO_TOOL_CALL")
-    no_tool_call_count = sum(1 for eval in trajectory.tool_evaluations if eval["tool_name"] == "NO_TOOL_CALL")
     
     return {
-        "total_decisions_evaluated": float(total),
-        "actual_tool_calls": float(actual_tool_calls),
-        "no_tool_call_instances": float(no_tool_call_count),
         "tool_appropriate_rate": appropriate_count / total if total > 0 else 0.0,
-        "tool_optimal_rate": optimal_count / total if total > 0 else 0.0,
-        "tool_optimal_count": float(optimal_count),
-        "tool_suboptimal_count": float(suboptimal_count),
-        "tool_incorrect_count": float(incorrect_count)
+        "tool_optimal_rate": optimal_count / total if total > 0 else 0.0
     }
 
 
@@ -269,18 +262,18 @@ async def main(config_path: str = "config.yaml"):
         job_type="comparison",
     )
     
-    # Model 1: GPT-4o-mini
-    gpt4o_mini = OpenAIModelWrapper(
-        model_name="gpt-4o-mini",
+    # Model 1: Comparison model 1 (from config)
+    comparison_model_1 = OpenAIModelWrapper(
+        model_name=config["comparison_model_1"],
         correctness_judge_model=config["correctness_judge_model"],
-        tool_judge_model=config.get("tool_judge_model", "openai/gpt-4o")
+        tool_judge_model=config["tool_judge_model"]
     )
     
-    # Model 2: GPT-4o
-    gpt4o = OpenAIModelWrapper(
-        model_name="gpt-4o",
+    # Model 2: Comparison model 2 (from config)
+    comparison_model_2 = OpenAIModelWrapper(
+        model_name=config["comparison_model_2"],
         correctness_judge_model=config["correctness_judge_model"],
-        tool_judge_model=config.get("tool_judge_model", "openai/gpt-4o")
+        tool_judge_model=config["tool_judge_model"]
     )
     
     # Model 3: OpenPipe/Qwen base model (untrained)
@@ -298,7 +291,7 @@ async def main(config_path: str = "config.yaml"):
         model=base_model,
         model_name=config["base_model"],
         correctness_judge_model=config["correctness_judge_model"],
-        tool_judge_model=config.get("tool_judge_model", "openai/gpt-4o")
+        tool_judge_model=config["tool_judge_model"]
     )
     
     # Preprocessing function to convert dataset rows to model input format
@@ -309,22 +302,26 @@ async def main(config_path: str = "config.yaml"):
     # Common scorers for all evaluations
     # These use the actual scorer classes from helpers.py
     scorers = [
-        score_correctness,
+        create_correctness_scorer(config["correctness_judge_model"]),
         score_source_retrieval,
         score_tool_usage
     ]
+    
+    # Get model names from config
+    comp_model_1_name = config["comparison_model_1"]
+    comp_model_2_name = config["comparison_model_2"]
     
     # Create separate evaluation objects for each model
     # This is required for the Leaderboard API - we need to pass the Evaluation objects to get_ref()
     evaluations = [
         weave.Evaluation(
-            name="gpt-4o-mini-evaluation",
+            name=f"{comp_model_1_name}-evaluation",
             dataset=dataset,
             scorers=scorers,
             preprocess_model_input=preprocess_model_input
         ),
         weave.Evaluation(
-            name="gpt-4o-evaluation",
+            name=f"{comp_model_2_name}-evaluation",
             dataset=dataset,
             scorers=scorers,
             preprocess_model_input=preprocess_model_input
@@ -338,9 +335,9 @@ async def main(config_path: str = "config.yaml"):
     ]
     
     # Models list
-    models = [gpt4o_mini, gpt4o, qwen_base]
-    model_names = ["gpt-4o-mini", "gpt-4o", "qwen-base"]
-    display_names = ["gpt-4o-mini", "gpt-4o", "OpenPipe/Qwen3-14B-Instruct base"]
+    models = [comparison_model_1, comparison_model_2, qwen_base]
+    model_names = [comp_model_1_name, comp_model_2_name, "qwen-base"]
+    display_names = [comp_model_1_name, comp_model_2_name, "OpenPipe/Qwen3-14B-Instruct base"]
     
     # Run evaluations
     results = {}
@@ -401,8 +398,8 @@ async def main(config_path: str = "config.yaml"):
 This leaderboard compares the performance of different models on the email search agent task.
 
 ### Models
-- **gpt-4o-mini**: OpenAI's cost-effective model
-- **gpt-4o**: OpenAI's most capable model
+- **Comparison Model 1**: Configurable OpenAI model (default: gpt-4o-mini)
+- **Comparison Model 2**: Configurable OpenAI model (default: gpt-5)
 - **qwen-base**: OpenPipe/Qwen3-14B-Instruct base model (before fine-tuning)
 
 ### Metrics
