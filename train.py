@@ -60,7 +60,7 @@ async def main(config_path: str = "config.yaml"):
     
     # Declare the model
     model = art.TrainableModel(
-        name="email-agent-qwen-art-trainable-model",
+        name="email-agent-qwen",
         project=run.config.project,
         base_model=run.config.base_model,
     )
