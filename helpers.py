@@ -625,17 +625,34 @@ async def rollout(
         wait=wait_exponential_jitter(initial=1, max=60, jitter=5),
         retry=retry_if_exception_type((RateLimitError, Exception)),
     )
-    async def call_model_with_retry():
-        """Call the model with retry logic for rate limit errors."""
-        return await client.chat.completions.create(
-            model=model.get_inference_name(),
-            temperature=1,
-            messages=traj.messages(),
-            tools=traj.tools,
-        )
+    async def call_model_with_retry(force_final_answer: bool = False):
+        """Call the model with retry logic for rate limit errors.
+        
+        Args:
+            force_final_answer: If True, force the model to call return_final_answer
+        """
+        kwargs = {
+            "model": model.get_inference_name(),
+            "temperature": 1,
+            "messages": traj.messages(),
+            "tools": traj.tools,
+        }
+        
+        # Force return_final_answer on the last turn if we haven't gotten an answer yet
+        if force_final_answer:
+            kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": "return_final_answer"}
+            }
+        
+        return await client.chat.completions.create(**kwargs)
 
-    for _ in range(MAX_TURNS):
-        response = await call_model_with_retry()
+    for turn_num in range(MAX_TURNS):
+        # Force final answer on the last turn if we haven't gotten one yet
+        is_last_turn = (turn_num == MAX_TURNS - 1)
+        force_answer = is_last_turn and traj.final_answer is None
+        
+        response = await call_model_with_retry(force_final_answer=force_answer)
 
         response_message = response.choices[0].message
         traj.messages_and_choices.append(response.choices[0])
@@ -734,6 +751,81 @@ async def rollout(
             _add_tool_usage_metrics(traj)
             return traj
 
+    # If we ran out of turns without a final answer, make one final forced attempt
+    if traj.final_answer is None:
+        try:
+            print(f"⚠️  Reached max turns without final answer. Making forced final attempt...")
+            # Add a user message prompting for final answer
+            traj.messages_and_choices.append({
+                "role": "user",
+                "content": "Please provide your final answer now using the return_final_answer function."
+            })
+            
+            response = await call_model_with_retry(force_final_answer=True)
+            response_message = response.choices[0].message
+            traj.messages_and_choices.append(response.choices[0])
+            
+            # Process the forced final answer
+            if response_message.tool_calls:
+                for tool_call in response_message.tool_calls:
+                    tool_name = tool_call.function.name
+                    if tool_name == "return_final_answer" and tool_name in tools_by_name:
+                        tool_args = json.loads(tool_call.function.arguments)
+                        tool_to_call = tools_by_name[tool_name]
+                        result = tool_to_call(**tool_args)
+                        traj.final_answer = result
+                        
+                        # Add the tool response message
+                        traj.messages_and_choices.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_name,
+                            "content": str(result),
+                        })
+                        
+                        # Evaluate the forced tool call
+                        tool_evaluation = await tool_scorer.score(
+                            conversation_history=traj.messages(),
+                            tool_call={
+                                "name": tool_name,
+                                "arguments": tool_call.function.arguments
+                            },
+                            tool_result=str(result),
+                            user_query=scenario.question
+                        )
+                        
+                        traj.tool_evaluations.append({
+                            "tool_name": tool_name,
+                            "tool_args": tool_call.function.arguments,
+                            "appropriate": tool_evaluation["appropriate"],
+                            "label": tool_evaluation["label"],
+                            "reasoning": tool_evaluation["reasoning"]
+                        })
+                        
+                        # Score the final answer
+                        if traj.final_answer:
+                            correctness_scorer = CorrectnessJudgeScorer(judge_model=correctness_judge_model)
+                            correctness_result = await correctness_scorer.score(
+                                output=traj.final_answer.answer,
+                                question=scenario.question,
+                                reference_answer=scenario.answer
+                            )
+                            traj.metrics["correct"] = correctness_result["correct"]
+                            traj.metadata["judge_reasoning"] = correctness_result["reasoning"]
+                            
+                            source_scorer = SourceRetrievalScorer()
+                            source_result = await source_scorer.score(
+                                output={"source_ids": traj.final_answer.source_ids},
+                                expected_source_ids=scenario.message_ids
+                            )
+                            traj.metrics["source_precision"] = source_result["source_precision"]
+                            traj.metrics["source_recall"] = source_result["source_recall"]
+                            traj.metrics["source_f1"] = source_result["source_f1"]
+                            traj.metrics["retrieved_correct_sources"] = source_result["retrieved_correct_sources"]
+                        break
+        except Exception as e:
+            print(f"Error in forced final answer attempt: {e}")
+    
     # Add aggregate tool usage metrics even if task wasn't completed (ran out of turns)
     _add_tool_usage_metrics(traj)
     return traj
