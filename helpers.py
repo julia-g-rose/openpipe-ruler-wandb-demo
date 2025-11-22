@@ -18,13 +18,18 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential_jitter,
     retry_if_exception_type,
+    before_sleep_log,
 )
-from openai import RateLimitError
+from openai import RateLimitError, APITimeoutError
 
 import art
 from art.utils.strip_logprobs import strip_logprobs
 from enron_helpers import Scenario, FinalAnswer, search_emails, read_email
 
+
+# Setup logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # Suppress weave validation errors
 logging.getLogger("weave").setLevel(logging.CRITICAL)
@@ -611,9 +616,12 @@ async def rollout(
     tools_by_name = {t.__name__: t for t in tools}
     traj.tools = [convert_to_openai_tool(t) for t in tools]
 
+    # Create OpenAI client with reasonable timeouts to prevent indefinite hangs
+    from httpx import Timeout
     client = AsyncOpenAI(
         base_url=model.inference_base_url,
         api_key=model.inference_api_key,
+        timeout=Timeout(300.0, connect=60.0),  # 5 min total timeout, 60s connect timeout
     )
     
     # Initialize tool usage scorer for evaluating each tool call
@@ -623,7 +631,8 @@ async def rollout(
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential_jitter(initial=1, max=60, jitter=5),
-        retry=retry_if_exception_type((RateLimitError, Exception)),
+        retry=retry_if_exception_type((RateLimitError, APITimeoutError)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     async def call_model_with_retry(force_final_answer: bool = False):
         """Call the model with retry logic for rate limit errors.
