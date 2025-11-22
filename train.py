@@ -60,7 +60,7 @@ async def main(config_path: str = "config.yaml"):
     
     # Declare the model
     model = art.TrainableModel(
-        name="email-agent-qwen",
+        name="email-agent-qwen-art-trainable-model",
         project=run.config.project,
         base_model=run.config.base_model,
     )
@@ -198,17 +198,27 @@ async def main(config_path: str = "config.yaml"):
                 split="val"
             )
             
-            # Add new columns for this validation step
-            step_suffix = f"_step_{batch.step}"
-            
-            # Collect data for new columns
-            model_outputs = []
-            source_ids_list = []
-            judge_corrects = []
-            judge_reasonings = []
-            ruler_rewards = []
-            retrieved_correct_sources_list = []
-            tool_appropriate_rates = []
+            # Create a new validation table for this step with consistent column names
+            # This allows W&B to visualize predictions over time
+            step_validation_table = wandb.Table(
+                columns=[
+                    "ID",
+                    "Split",
+                    "Question",
+                    "Answer",
+                    "Inbox",
+                    "Num Messages",
+                    "Realism Score",
+                    "model_output",
+                    "model_source_ids",
+                    "model_explanation",
+                    "judge_correct",
+                    "judge_reasoning",
+                    "ruler_reward",
+                    "retrieved_correct_sources",
+                    "tool_appropriate_rate",
+                ]
+            )
             
             for scenario, group in zip(validation_scenarios, judged_validation_groups):
                 # Get the first (and only) trajectory from the group
@@ -216,34 +226,62 @@ async def main(config_path: str = "config.yaml"):
                     traj = group.trajectories[0]
                     
                     # Extract metrics for this step
-                    model_outputs.append(traj.final_answer.answer if traj.final_answer else "")
-                    source_ids_list.append(str(traj.final_answer.source_ids) if traj.final_answer else "[]")
-                    judge_corrects.append(traj.metrics.get("correct", 0.0))
-                    judge_reasonings.append(traj.metadata.get("judge_reasoning", ""))
-                    ruler_rewards.append(traj.reward)
-                    retrieved_correct_sources_list.append(traj.metrics.get("retrieved_correct_sources", 0.0))
-                    tool_appropriate_rates.append(traj.metrics.get("tool_appropriate_rate", 0.0))
+                    model_output = traj.final_answer.answer if traj.final_answer else ""
+                    source_ids = str(traj.final_answer.source_ids) if traj.final_answer else "[]"
+                    
+                    # Extract model's explanation from the last assistant message before final answer
+                    model_explanation = ""
+                    if traj.messages_and_choices:
+                        for msg in reversed(traj.messages_and_choices):
+                            if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                                model_explanation = msg.get("content", "")
+                                break
+                            elif hasattr(msg, "message") and msg.message.role == "assistant" and msg.message.content:
+                                model_explanation = msg.message.content
+                                break
+                    
+                    judge_correct = traj.metrics.get("correct", 0.0)
+                    judge_reasoning = traj.metadata.get("judge_reasoning", "")
+                    ruler_reward = traj.reward
+                    retrieved_correct_sources = traj.metrics.get("retrieved_correct_sources", 0.0)
+                    tool_appropriate_rate = traj.metrics.get("tool_appropriate_rate", 0.0)
                 else:
                     # Handle case where trajectory failed
-                    model_outputs.append("")
-                    source_ids_list.append("[]")
-                    judge_corrects.append(0.0)
-                    judge_reasonings.append("")
-                    ruler_rewards.append(0.0)
-                    retrieved_correct_sources_list.append(0.0)
-                    tool_appropriate_rates.append(0.0)
+                    model_output = ""
+                    source_ids = "[]"
+                    model_explanation = ""
+                    judge_correct = 0.0
+                    judge_reasoning = ""
+                    ruler_reward = 0.0
+                    retrieved_correct_sources = 0.0
+                    tool_appropriate_rate = 0.0
+                
+                # Add row to the table
+                step_validation_table.add_data(
+                    scenario.id,
+                    scenario.split,
+                    scenario.question[:100] + "..." if len(scenario.question) > 100 else scenario.question,
+                    scenario.answer[:100] + "..." if len(scenario.answer) > 100 else scenario.answer,
+                    scenario.inbox_address,
+                    len(scenario.message_ids),
+                    scenario.how_realistic,
+                    model_output,
+                    source_ids,
+                    model_explanation,
+                    judge_correct,
+                    judge_reasoning,
+                    ruler_reward,
+                    retrieved_correct_sources,
+                    tool_appropriate_rate,
+                )
             
-            # Add columns with step-specific names
-            validation_table.add_column(f"model_output{step_suffix}", model_outputs)
-            validation_table.add_column(f"model_source_ids{step_suffix}", source_ids_list)
-            validation_table.add_column(f"judge_correct{step_suffix}", judge_corrects)
-            validation_table.add_column(f"judge_reasoning{step_suffix}", judge_reasonings)
-            validation_table.add_column(f"ruler_reward{step_suffix}", ruler_rewards)
-            validation_table.add_column(f"retrieved_correct_sources{step_suffix}", retrieved_correct_sources_list)
-            validation_table.add_column(f"tool_appropriate_rate{step_suffix}", tool_appropriate_rates)
-            
-            # Log the updated table with a consistent name
-            run.log({"validation_results": validation_table})
+            # Log the table as an artifact - W&B will track changes over time
+            validation_artifact = wandb.Artifact(
+                name="validation_predictions",
+                type="predictions",
+            )
+            validation_artifact.add(step_validation_table, "validation_results_2")
+            run.log_artifact(validation_artifact)
         
         # Save checkpoint metadata as W&B artifact if enabled
         if run.config.get("save_checkpoint_artifact", True):
