@@ -14,6 +14,7 @@ import random
 import yaml
 from pathlib import Path
 from dotenv import load_dotenv
+from datetime import datetime
 
 import wandb
 import art
@@ -48,16 +49,18 @@ async def main(config_path: str = "config.yaml"):
     random.seed(training_config.get("random_seed", 42))
     
     # Initialize W&B run with config
+    lr_str = f"{training_config['learning_rate']:.0e}".replace('-0', '-')  # Format like 1e-5
+    run_name = f"train-d{training_config['training_dataset_size']}-v{training_config['validation_dataset_size']}-g{training_config['groups_per_step']}-r{training_config['rollouts_per_group']}-lr{lr_str}-{datetime.now().strftime('%Y%m%d-%H%M')}"
     run = wandb.init(
         project=training_config["project"],
-        name=training_config.get("wandb_run_name", "email-agent-training"),
+        name=run_name,
         config=training_config,
         job_type=training_config.get("wandb_job_type", "train"),
     )
     
     # Declare the model
     model = art.TrainableModel(
-        name="email-agent-qwen",
+        name="email-agent-qwen-art-trainable-model",
         project=run.config.project,
         base_model=run.config.base_model,
     )
