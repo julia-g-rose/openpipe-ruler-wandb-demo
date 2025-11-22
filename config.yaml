@@ -2,7 +2,7 @@
 # This file defines all hyperparameters and settings for the training run
 
 # Model configuration
-project: "julia-openpipe-wandb-email-agent-demo-v16"
+project: "julia-openpipe-wandb-email-agent-demo-v18"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
