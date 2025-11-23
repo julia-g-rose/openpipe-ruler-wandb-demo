@@ -167,6 +167,30 @@ async def main(config_path: str = "config.yaml"):
             config=art.TrainConfig(learning_rate=run.config.learning_rate),
         )
         
+        # Explicitly log training metrics together for scatter plot compatibility
+        # Calculate aggregate metrics from judged_groups
+        all_train_trajectories = [t for g in judged_groups for t in g.trajectories]
+        if all_train_trajectories:
+            avg_train_reward = sum(t.reward for t in all_train_trajectories) / len(all_train_trajectories)
+            avg_train_correct = sum(t.metrics.get("correct", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
+            avg_train_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
+            avg_train_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
+            
+            # Calculate completion tokens from finished_train_groups (before RULER scoring)
+            all_finished_train_trajectories = [t for g in finished_train_groups for t in g.trajectories]
+            avg_train_completion_tokens = sum(
+                t.metadata.get("completion_tokens", 0) for t in all_finished_train_trajectories
+            ) / len(all_finished_train_trajectories) if all_finished_train_trajectories else 0
+            
+            # Log all training metrics together in the same step
+            wandb.log({
+                "train/reward": avg_train_reward,
+                "train/correct": avg_train_correct,
+                "train/retrieved_correct_sources": avg_train_retrieved_correct_sources,
+                "train/tool_optimal_rate": avg_train_tool_optimal_rate,
+                "train/completion_tokens": avg_train_completion_tokens,
+            }, step=batch.step)
+        
         # Run validation at specified intervals
         if batch.step % run.config.validation_step_interval == 0:
             validation_groups = []
@@ -197,6 +221,29 @@ async def main(config_path: str = "config.yaml"):
                 judged_validation_groups,
                 split="val"
             )
+            
+            # Explicitly log validation metrics together for scatter plot compatibility
+            all_val_trajectories = [t for g in judged_validation_groups for t in g.trajectories]
+            if all_val_trajectories:
+                avg_val_reward = sum(t.reward for t in all_val_trajectories) / len(all_val_trajectories)
+                avg_val_correct = sum(t.metrics.get("correct", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
+                avg_val_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
+                avg_val_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
+                
+                # Calculate completion tokens from finished_validation_groups (before RULER scoring)
+                all_finished_val_trajectories = [t for g in finished_validation_groups for t in g.trajectories]
+                avg_val_completion_tokens = sum(
+                    t.metadata.get("completion_tokens", 0) for t in all_finished_val_trajectories
+                ) / len(all_finished_val_trajectories) if all_finished_val_trajectories else 0
+                
+                # Log all validation metrics together in the same step
+                wandb.log({
+                    "val/reward": avg_val_reward,
+                    "val/correct": avg_val_correct,
+                    "val/retrieved_correct_sources": avg_val_retrieved_correct_sources,
+                    "val/tool_optimal_rate": avg_val_tool_optimal_rate,
+                    "val/completion_tokens": avg_val_completion_tokens,
+                }, step=batch.step)
             
             # Create a new validation table for this step with consistent column names
             # This allows W&B to visualize predictions over time

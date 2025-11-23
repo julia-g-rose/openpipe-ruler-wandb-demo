@@ -136,7 +136,6 @@ class CorrectnessJudgeResponse(BaseModel):
 
 class ToolUsageJudgeResponse(BaseModel):
     reasoning: str = Field(description="Explanation of whether the tool call was appropriate given the context.")
-    appropriate: bool = Field(description="Whether the tool call was appropriate and helpful for solving the task.")
     label: str = Field(description="Label categorizing the tool call: 'optimal', 'suboptimal', or 'incorrect'.")
 
 
@@ -234,9 +233,6 @@ class SourceRetrievalScorer(weave.Scorer):
     the agent's search and retrieval strategy.
     
     Metrics returned:
-        - source_precision: Precision of retrieved sources (correct / total retrieved)
-        - source_recall: Recall of retrieved sources (correct / total expected)
-        - source_f1: F1 score combining precision and recall
         - retrieved_correct_sources: Whether all expected sources were retrieved
     """
     
@@ -253,7 +249,7 @@ class SourceRetrievalScorer(weave.Scorer):
             expected_source_ids: List of expected message IDs that should be retrieved
             
         Returns:
-            Dict containing precision, recall, F1, and correctness metrics
+            Dict containing retrieved_correct_sources metric
         """
         # Extract source IDs from output
         if isinstance(output, dict):
@@ -266,32 +262,14 @@ class SourceRetrievalScorer(weave.Scorer):
         
         expected_ids = set(expected_source_ids)
         
-        # Calculate metrics
-        if len(retrieved_ids) == 0:
-            precision = 0.0
-        else:
-            correct_retrievals = retrieved_ids.intersection(expected_ids)
-            precision = len(correct_retrievals) / len(retrieved_ids)
-        
+        # Check if all expected sources were retrieved
         if len(expected_ids) == 0:
-            recall = 1.0 if len(retrieved_ids) == 0 else 0.0
+            retrieved_all = len(retrieved_ids) == 0
         else:
             correct_retrievals = retrieved_ids.intersection(expected_ids)
-            recall = len(correct_retrievals) / len(expected_ids)
-        
-        # F1 score
-        if precision + recall == 0:
-            f1 = 0.0
-        else:
-            f1 = 2 * (precision * recall) / (precision + recall)
-        
-        # Check if all expected sources were retrieved (perfect recall)
-        retrieved_all = recall == 1.0
+            retrieved_all = len(correct_retrievals) == len(expected_ids)
         
         return {
-            "source_precision": precision,
-            "source_recall": recall,
-            "source_f1": f1,
             "retrieved_correct_sources": float(retrieved_all)
         }
 
@@ -334,7 +312,6 @@ class ToolUsageScorer(weave.Scorer):
             
         Returns:
             Dict containing:
-                - appropriate: Boolean score (1.0 if appropriate, 0.0 if not)
                 - label: Categorization ('optimal', 'suboptimal', or 'incorrect')
                 - reasoning: Explanation of the judgment
         """
@@ -408,20 +385,17 @@ class ToolUsageScorer(weave.Scorer):
             except Exception as e:
                 return ToolUsageJudgeResponse(
                     reasoning=f"Parse error: {e}\nRaw: {raw_content}",
-                    appropriate=False,
                     label="incorrect"
                 )
         
         try:
             judge_response = await _judge_with_retry()
             return {
-                "appropriate": float(judge_response.appropriate),
                 "label": judge_response.label,
                 "reasoning": judge_response.reasoning
             }
         except Exception as e:
             return {
-                "appropriate": 0.0,
                 "label": "error",
                 "reasoning": f"Failed to get judgment after {self.max_retries} attempts: {str(e)}"
             }
@@ -442,7 +416,6 @@ class ToolUsageScorer(weave.Scorer):
             
         Returns:
             Dict containing:
-                - appropriate: Boolean score (1.0 if not calling a tool was appropriate, 0.0 if not)
                 - label: Categorization ('optimal', 'suboptimal', or 'incorrect')
                 - reasoning: Explanation of the judgment
         """
@@ -504,20 +477,17 @@ class ToolUsageScorer(weave.Scorer):
             except Exception as e:
                 return ToolUsageJudgeResponse(
                     reasoning=f"Parse error: {e}\nRaw: {raw_content}",
-                    appropriate=False,
                     label="incorrect"
                 )
         
         try:
             judge_response = await _judge_with_retry()
             return {
-                "appropriate": float(judge_response.appropriate),
                 "label": judge_response.label,
                 "reasoning": judge_response.reasoning
             }
         except Exception as e:
             return {
-                "appropriate": 0.0,
                 "label": "error",
                 "reasoning": f"Failed to get judgment after {self.max_retries} attempts: {str(e)}"
             }
@@ -676,7 +646,6 @@ async def rollout(
             traj.tool_evaluations.append({
                 "tool_name": "NO_TOOL_CALL",
                 "tool_args": f"text_response: {assistant_text[:100]}",
-                "appropriate": no_tool_evaluation["appropriate"],
                 "label": no_tool_evaluation["label"],
                 "reasoning": no_tool_evaluation["reasoning"]
             })
@@ -718,7 +687,6 @@ async def rollout(
                     traj.tool_evaluations.append({
                         "tool_name": tool_name,
                         "tool_args": tool_call.function.arguments,
-                        "appropriate": tool_evaluation["appropriate"],
                         "label": tool_evaluation["label"],
                         "reasoning": tool_evaluation["reasoning"]
                     })
@@ -744,9 +712,6 @@ async def rollout(
                                 output={"source_ids": traj.final_answer.source_ids},
                                 expected_source_ids=scenario.message_ids
                             )
-                            traj.metrics["source_precision"] = source_result["source_precision"]
-                            traj.metrics["source_recall"] = source_result["source_recall"]
-                            traj.metrics["source_f1"] = source_result["source_f1"]
                             traj.metrics["retrieved_correct_sources"] = source_result["retrieved_correct_sources"]
                         
                         # Add aggregate tool usage metrics
@@ -803,7 +768,6 @@ async def rollout(
                         traj.tool_evaluations.append({
                             "tool_name": tool_name,
                             "tool_args": tool_call.function.arguments,
-                            "appropriate": tool_evaluation["appropriate"],
                             "label": tool_evaluation["label"],
                             "reasoning": tool_evaluation["reasoning"]
                         })
@@ -824,9 +788,6 @@ async def rollout(
                                 output={"source_ids": traj.final_answer.source_ids},
                                 expected_source_ids=scenario.message_ids
                             )
-                            traj.metrics["source_precision"] = source_result["source_precision"]
-                            traj.metrics["source_recall"] = source_result["source_recall"]
-                            traj.metrics["source_f1"] = source_result["source_f1"]
                             traj.metrics["retrieved_correct_sources"] = source_result["retrieved_correct_sources"]
                         break
         except Exception as e:

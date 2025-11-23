@@ -151,7 +151,7 @@ This will:
 
 **Key Metrics Tracked:**
 - `correct` - Answer correctness (0.0-1.0)
-- `source_f1` - F1 score for source retrieval
+- `retrieved_correct_sources` - Whether all expected sources were retrieved
 - `tool_optimal_rate` - % of optimal tool decisions
 
 ## Configuration

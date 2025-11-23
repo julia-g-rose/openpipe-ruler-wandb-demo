@@ -194,9 +194,6 @@ async def score_source_retrieval(model_output: dict) -> dict:
     
     if not scenario:
         return {
-            "source_precision": 0.0,
-            "source_recall": 0.0,
-            "source_f1": 0.0,
             "retrieved_correct_sources": 0.0
         }
     
