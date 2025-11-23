@@ -346,27 +346,20 @@ async def main(config_path: str = "config.yaml"):
 This leaderboard compares the performance of different models on the email search agent task.
 
 ### Models
-- **Comparison Model 1**: Configurable OpenAI model (default: gpt-4o-mini)
-- **Comparison Model 2**: Configurable OpenAI model (default: gpt-5)
-- **qwen-base**: OpenPipe/Qwen3-14B-Instruct base model (before fine-tuning)
+- **Comparison Model**: Configurable OpenAI model (from config, default: gpt-5)
+- **Qwen Base**: OpenPipe/Qwen3-14B-Instruct base model (before fine-tuning)
 
 ### Metrics
 1. **Correctness**: Whether the model's answer matches the expected answer
 2. **Tool Optimal Rate**: Percentage of tool calls that were optimal
-3. **Tool Appropriate Rate**: Percentage of tool calls that were appropriate (not incorrect)
-4. **Retrieved Correct Sources**: Percentage of scenarios where correct source emails were retrieved
+3. **Retrieved Correct Sources**: Percentage of scenarios where correct source emails were retrieved
 """,
             columns=[
-                # GPT-4o-mini metrics
+                # Comparison model (e.g., GPT-5) metrics
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[0]).uri(),
                     scorer_name="score_correctness",
                     summary_metric_path="correct.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[0]).uri(),
-                    scorer_name="score_tool_usage",
-                    summary_metric_path="tool_optimal_rate.mean",
                 ),
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[0]).uri(),
@@ -378,7 +371,7 @@ This leaderboard compares the performance of different models on the email searc
                     scorer_name="score_source_retrieval",
                     summary_metric_path="retrieved_correct_sources.mean",
                 ),
-                # GPT-4o metrics
+                # Qwen base model metrics
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[1]).uri(),
                     scorer_name="score_correctness",
@@ -391,32 +384,6 @@ This leaderboard compares the performance of different models on the email searc
                 ),
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[1]).uri(),
-                    scorer_name="score_tool_usage",
-                    summary_metric_path="tool_optimal_rate.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[1]).uri(),
-                    scorer_name="score_source_retrieval",
-                    summary_metric_path="retrieved_correct_sources.mean",
-                ),
-                # Qwen base metrics
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[2]).uri(),
-                    scorer_name="score_correctness",
-                    summary_metric_path="correct.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[2]).uri(),
-                    scorer_name="score_tool_usage",
-                    summary_metric_path="tool_optimal_rate.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[2]).uri(),
-                    scorer_name="score_tool_usage",
-                    summary_metric_path="tool_optimal_rate.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[2]).uri(),
                     scorer_name="score_source_retrieval",
                     summary_metric_path="retrieved_correct_sources.mean",
                 ),
@@ -424,7 +391,11 @@ This leaderboard compares the performance of different models on the email searc
         )
         
         leaderboard_ref = weave.publish(leaderboard_spec)
+        print(f"\n📊 Leaderboard published: {leaderboard_ref}")
     except Exception as e:
+        print(f"\n❌ Failed to create leaderboard: {e}")
+        import traceback
+        traceback.print_exc()
         leaderboard_ref = None
     
     # Finish W&B run
