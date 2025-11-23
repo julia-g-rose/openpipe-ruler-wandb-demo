@@ -300,36 +300,60 @@ async def main(config_path: str = "config.yaml"):
     # Get model names from config
     comp_model_name = config["comparison_model"]
     
-    # Create separate evaluation objects for each model
-    # This is required for the Leaderboard API - we need to pass the Evaluation objects to get_ref()
-    evaluations = [
-        weave.Evaluation(
-            name=f"{comp_model_name}-evaluation",
-            dataset=dataset,
-            scorers=scorers,
-            preprocess_model_input=preprocess_model_input
-        ),
-        weave.Evaluation(
-            name="qwen-base-evaluation",
-            dataset=dataset,
-            scorers=scorers,
-            preprocess_model_input=preprocess_model_input
-        ),
-    ]
+    # Create ONE evaluation object that will be shared by all models
+    # This ensures all models appear as rows under the same columns in the leaderboard
+    shared_evaluation = weave.Evaluation(
+        name="email-agent-evaluation",  # Single shared evaluation name
+        dataset=dataset,
+        scorers=scorers,
+        preprocess_model_input=preprocess_model_input
+    )
+    
+    # Model 4: Try to load the trained model if it exists
+    trained_model_wrapper = None
+    trained_step = 0
+    try:
+        print("\n🔄 Checking for trained model...")
+        trained_model = art.TrainableModel(
+            name="email-agent-qwen-art-trainable-model-v2",
+            project=config["project"],
+            base_model=config["base_model"],
+        )
+        await trained_model.register(backend)
+        trained_step = await trained_model.get_step()
+        
+        if trained_step > 0:
+            print(f"✓ Found trained model at step {trained_step}")
+            trained_model_wrapper = ArtQwenModelWrapper(
+                model=trained_model,
+                model_name=f"{config['base_model']} (trained @ step {trained_step})",
+                correctness_judge_model=config["correctness_judge_model"],
+                tool_judge_model=config["tool_judge_model"]
+            )
+        else:
+            print("⚠️  Model exists but is at step 0 (not trained yet)")
+    except Exception as e:
+        print(f"ℹ️  No trained model found: {e}")
     
     # Models list
     models = [comparison_model, qwen_base]
     model_names = [comp_model_name, "qwen-base"]
     display_names = [comp_model_name, "OpenPipe/Qwen3-14B-Instruct base"]
     
-    # Run evaluations
+    # Add trained model if it exists
+    if trained_model_wrapper:
+        models.append(trained_model_wrapper)
+        model_names.append("qwen-trained")
+        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (trained @ step {trained_step})")
+    
+    # Run evaluations - all models evaluated with the SAME evaluation object
     results = {}
     
-    for evaluation, model, model_name, display_name in zip(evaluations, models, model_names, display_names):
+    for model, model_name, display_name in zip(models, model_names, display_names):
         print(f"\n🔄 Evaluating {display_name}...")
         
-        # Run evaluation
-        eval_result = await evaluation.evaluate(
+        # Run evaluation - all using the shared evaluation
+        eval_result = await shared_evaluation.evaluate(
             model,
             __weave={"display_name": display_name}
         )
@@ -339,7 +363,8 @@ async def main(config_path: str = "config.yaml"):
     
     # Create Weave Leaderboard object
     try:
-        # Create leaderboard using the Evaluation objects (not their results)
+        # Create leaderboard using the single shared Evaluation object
+        # All models evaluated with this evaluation will appear as rows
         leaderboard_spec = leaderboard.Leaderboard(
             name="Email Agent Model Comparison",
             description="""
@@ -348,42 +373,32 @@ This leaderboard compares the performance of different models on the email searc
 ### Models
 - **Comparison Model**: Configurable OpenAI model (from config, default: gpt-5)
 - **Qwen Base**: OpenPipe/Qwen3-14B-Instruct base model (before fine-tuning)
+- **Qwen Trained**: Fine-tuned model (automatically included if trained model exists)
 
 ### Metrics
 1. **Correctness**: Whether the model's answer matches the expected answer
 2. **Tool Optimal Rate**: Percentage of tool calls that were optimal
 3. **Retrieved Correct Sources**: Percentage of scenarios where correct source emails were retrieved
+
+### Note
+All models are evaluated using the same evaluation object, ensuring they appear as rows in this leaderboard.
+To update the leaderboard with a newly trained model, simply re-run this script.
 """,
             columns=[
-                # Comparison model (e.g., GPT-5) metrics
+                # Single set of columns for the shared evaluation
+                # All models appear as rows under these columns
                 leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[0]).uri(),
+                    evaluation_object_ref=get_ref(shared_evaluation).uri(),
                     scorer_name="score_correctness",
                     summary_metric_path="correct.mean",
                 ),
                 leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[0]).uri(),
+                    evaluation_object_ref=get_ref(shared_evaluation).uri(),
                     scorer_name="score_tool_usage",
                     summary_metric_path="tool_optimal_rate.mean",
                 ),
                 leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[0]).uri(),
-                    scorer_name="score_source_retrieval",
-                    summary_metric_path="retrieved_correct_sources.mean",
-                ),
-                # Qwen base model metrics
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[1]).uri(),
-                    scorer_name="score_correctness",
-                    summary_metric_path="correct.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[1]).uri(),
-                    scorer_name="score_tool_usage",
-                    summary_metric_path="tool_optimal_rate.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(evaluations[1]).uri(),
+                    evaluation_object_ref=get_ref(shared_evaluation).uri(),
                     scorer_name="score_source_retrieval",
                     summary_metric_path="retrieved_correct_sources.mean",
                 ),
