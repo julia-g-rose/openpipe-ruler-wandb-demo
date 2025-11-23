@@ -312,7 +312,7 @@ async def main(config_path: str = "config.yaml"):
     try:
         print("\n🔄 Checking for trained model...")
         trained_model = art.TrainableModel(
-            name="email-agent-qwen-art-trainable-model-v2",
+            name=config["model_name"],
             project=config["project"],
             base_model=config["base_model"],
         )

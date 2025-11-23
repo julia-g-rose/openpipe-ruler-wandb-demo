@@ -60,7 +60,7 @@ async def main(config_path: str = "config.yaml"):
     
     # Declare the model
     model = art.TrainableModel(
-        name="email-agent-qwen-art-trainable-model-v2",
+        name=run.config.model_name,
         project=run.config.project,
         base_model=run.config.base_model,
     )
@@ -171,25 +171,53 @@ async def main(config_path: str = "config.yaml"):
         # Calculate aggregate metrics from judged_groups
         all_train_trajectories = [t for g in judged_groups for t in g.trajectories]
         if all_train_trajectories:
-            avg_train_reward = sum(t.reward for t in all_train_trajectories) / len(all_train_trajectories)
+            # Calculate reward statistics
+            train_rewards = [t.reward for t in all_train_trajectories]
+            avg_train_reward = sum(train_rewards) / len(train_rewards)
+            reward_std_dev = (sum((r - avg_train_reward) ** 2 for r in train_rewards) / len(train_rewards)) ** 0.5
+            
             avg_train_correct = sum(t.metrics.get("correct", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             avg_train_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             avg_train_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             
-            # Calculate completion tokens from finished_train_groups (before RULER scoring)
-            all_finished_train_trajectories = [t for g in finished_train_groups for t in g.trajectories]
-            avg_train_completion_tokens = sum(
-                t.metadata.get("completion_tokens", 0) for t in all_finished_train_trajectories
-            ) / len(all_finished_train_trajectories) if all_finished_train_trajectories else 0
+            # Calculate total completion tokens
+            total_train_completion_tokens = sum(
+                t.metadata.get("completion_tokens", 0) if hasattr(t, 'metadata') else 0
+                for t in all_train_trajectories
+            )
             
-            # Log all training metrics together in the same step
-            wandb.log({
+            # Extract training step metrics (loss, grad_norm, entropy) if available
+            train_metrics = {
                 "train/reward": avg_train_reward,
+                "train/ruler_score": avg_train_reward,
                 "train/correct": avg_train_correct,
                 "train/retrieved_correct_sources": avg_train_retrieved_correct_sources,
                 "train/tool_optimal_rate": avg_train_tool_optimal_rate,
-                "train/completion_tokens": avg_train_completion_tokens,
-            }, step=batch.step)
+                "train/reward_std_dev": reward_std_dev,
+                "train/completion_tokens": total_train_completion_tokens,
+            }
+            
+            # Try to extract loss, grad_norm, entropy from trajectory metadata
+            # These are typically added by the ART training step
+            if all_train_trajectories and hasattr(all_train_trajectories[0], 'metadata'):
+                # Average loss across trajectories if available
+                losses = [t.metadata.get("loss") for t in all_train_trajectories if hasattr(t, 'metadata') and t.metadata.get("loss") is not None]
+                if losses:
+                    train_metrics["train/loss"] = sum(losses) / len(losses)
+                
+                # Use the most recent grad_norm (typically the same for all trajectories in a batch)
+                for t in reversed(all_train_trajectories):
+                    if hasattr(t, 'metadata') and t.metadata.get("grad_norm") is not None:
+                        train_metrics["train/grad_norm"] = t.metadata["grad_norm"]
+                        break
+                
+                # Average entropy across trajectories if available
+                entropies = [t.metadata.get("entropy") for t in all_train_trajectories if hasattr(t, 'metadata') and t.metadata.get("entropy") is not None]
+                if entropies:
+                    train_metrics["train/entropy"] = sum(entropies) / len(entropies)
+            
+            # Log all training metrics together in the same step
+            wandb.log(train_metrics, step=batch.step)
         
         # Run validation at specified intervals
         if batch.step % run.config.validation_step_interval == 0:
@@ -230,19 +258,80 @@ async def main(config_path: str = "config.yaml"):
                 avg_val_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 
-                # Calculate completion tokens from finished_validation_groups (before RULER scoring)
-                all_finished_val_trajectories = [t for g in finished_validation_groups for t in g.trajectories]
-                avg_val_completion_tokens = sum(
-                    t.metadata.get("completion_tokens", 0) for t in all_finished_val_trajectories
-                ) / len(all_finished_val_trajectories) if all_finished_val_trajectories else 0
+                # Calculate total completion tokens across all validation trajectories
+                total_val_completion_tokens = sum(
+                    t.metadata.get("completion_tokens", 0) if hasattr(t, 'metadata') else 0 
+                    for t in all_val_trajectories
+                )
                 
                 # Log all validation metrics together in the same step
                 wandb.log({
                     "val/reward": avg_val_reward,
+                    "val/ruler_score": avg_val_reward,  # Add explicit RULER score logging
                     "val/correct": avg_val_correct,
                     "val/retrieved_correct_sources": avg_val_retrieved_correct_sources,
                     "val/tool_optimal_rate": avg_val_tool_optimal_rate,
-                    "val/completion_tokens": avg_val_completion_tokens,
+                    "val/completion_tokens": total_val_completion_tokens,
+                }, step=batch.step)
+                
+                # Create scatter plots for correlation analysis with per-trajectory data
+                # Build data table with individual trajectory metrics
+                scatter_data = []
+                for traj in all_val_trajectories:
+                    ruler_score = traj.reward
+                    correct = traj.metrics.get("correct", 0.0)
+                    retrieved_sources = traj.metrics.get("retrieved_correct_sources", 0.0)
+                    tool_optimal = traj.metrics.get("tool_optimal_rate", 0.0)
+                    completion_tokens = traj.metadata.get("completion_tokens", 0) if hasattr(traj, 'metadata') else 0
+                    
+                    scatter_data.append([
+                        ruler_score, correct, retrieved_sources, tool_optimal, completion_tokens
+                    ])
+                
+                scatter_table = wandb.Table(
+                    data=scatter_data,
+                    columns=["ruler_score", "correct", "retrieved_correct_sources", "tool_optimal_rate", "completion_tokens"]
+                )
+                
+                # RULER Score Correlations panel
+                wandb.log({
+                    "ruler_score_correlations/ruler_vs_tool_optimal": wandb.plot.scatter(
+                        scatter_table,
+                        "tool_optimal_rate",
+                        "ruler_score",
+                        title="RULER Score vs Tool Optimal Rate"
+                    ),
+                    "ruler_score_correlations/ruler_vs_correct": wandb.plot.scatter(
+                        scatter_table,
+                        "correct",
+                        "ruler_score",
+                        title="RULER Score vs Correctness"
+                    ),
+                    "ruler_score_correlations/ruler_vs_retrieved_sources": wandb.plot.scatter(
+                        scatter_table,
+                        "retrieved_correct_sources",
+                        "ruler_score",
+                        title="RULER Score vs Retrieved Correct Sources"
+                    ),
+                    # Correctness Correlations panel
+                    "correctness_correlations/correct_vs_tool_optimal": wandb.plot.scatter(
+                        scatter_table,
+                        "tool_optimal_rate",
+                        "correct",
+                        title="Correctness vs Tool Optimal Rate"
+                    ),
+                    "correctness_correlations/correct_vs_retrieved_sources": wandb.plot.scatter(
+                        scatter_table,
+                        "retrieved_correct_sources",
+                        "correct",
+                        title="Correctness vs Retrieved Correct Sources"
+                    ),
+                    "correctness_correlations/correct_vs_completion_tokens": wandb.plot.scatter(
+                        scatter_table,
+                        "completion_tokens",
+                        "correct",
+                        title="Correctness vs Completion Tokens"
+                    ),
                 }, step=batch.step)
             
             # Create a new validation table for this step with consistent column names
