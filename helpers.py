@@ -548,6 +548,7 @@ async def rollout(
         metadata={
             "scenario_id": scenario.id,
             "step": email_scenario.step,
+            "completion_tokens": 0,  # Track total completion tokens used
         },
     )
 
@@ -629,6 +630,10 @@ async def rollout(
         force_answer = is_last_turn and traj.final_answer is None
         
         response = await call_model_with_retry(force_final_answer=force_answer)
+        
+        # Track completion tokens from this API call
+        if hasattr(response, 'usage') and response.usage:
+            traj.metadata["completion_tokens"] += response.usage.completion_tokens
 
         response_message = response.choices[0].message
         traj.messages_and_choices.append(response.choices[0])
@@ -733,6 +738,11 @@ async def rollout(
             })
             
             response = await call_model_with_retry(force_final_answer=True)
+            
+            # Track completion tokens from this API call
+            if hasattr(response, 'usage') and response.usage:
+                traj.metadata["completion_tokens"] += response.usage.completion_tokens
+            
             response_message = response.choices[0].message
             traj.messages_and_choices.append(response.choices[0])
             
