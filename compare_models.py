@@ -62,7 +62,7 @@ class OpenAIArtModel:
         return self.model_name
 
 
-class WeaveModelWrapper(weave.Model):
+class ArtQwenModelWrapper(weave.Model):
     """Wrapper to make ART models compatible with Weave evaluations."""
     
     model: Any
@@ -223,17 +223,14 @@ def score_tool_usage(model_output: dict) -> dict:
     
     if not trajectory or not trajectory.tool_evaluations:
         return {
-            "tool_appropriate_rate": 0.0,
             "tool_optimal_rate": 0.0
         }
     
     # Aggregate tool evaluations using the same logic as _add_tool_usage_metrics
     total = len(trajectory.tool_evaluations)
-    appropriate_count = sum(1 for eval in trajectory.tool_evaluations if eval["appropriate"] == 1.0)
     optimal_count = sum(1 for eval in trajectory.tool_evaluations if eval["label"] == "optimal")
     
     return {
-        "tool_appropriate_rate": appropriate_count / total if total > 0 else 0.0,
         "tool_optimal_rate": optimal_count / total if total > 0 else 0.0
     }
 
@@ -262,16 +259,9 @@ async def main(config_path: str = "config.yaml"):
         job_type="comparison",
     )
     
-    # Model 1: Comparison model 1 (from config)
-    comparison_model_1 = OpenAIModelWrapper(
-        model_name=config["comparison_model_1"],
-        correctness_judge_model=config["correctness_judge_model"],
-        tool_judge_model=config["tool_judge_model"]
-    )
-    
-    # Model 2: Comparison model 2 (from config)
-    comparison_model_2 = OpenAIModelWrapper(
-        model_name=config["comparison_model_2"],
+    # Comparison model (from config)
+    comparison_model = OpenAIModelWrapper(
+        model_name=config["comparison_model"],
         correctness_judge_model=config["correctness_judge_model"],
         tool_judge_model=config["tool_judge_model"]
     )
@@ -287,7 +277,7 @@ async def main(config_path: str = "config.yaml"):
     backend = ServerlessBackend()
     await base_model.register(backend)
     
-    qwen_base = WeaveModelWrapper(
+    qwen_base = ArtQwenModelWrapper(
         model=base_model,
         model_name=config["base_model"],
         correctness_judge_model=config["correctness_judge_model"],
@@ -308,20 +298,13 @@ async def main(config_path: str = "config.yaml"):
     ]
     
     # Get model names from config
-    comp_model_1_name = config["comparison_model_1"]
-    comp_model_2_name = config["comparison_model_2"]
+    comp_model_name = config["comparison_model"]
     
     # Create separate evaluation objects for each model
     # This is required for the Leaderboard API - we need to pass the Evaluation objects to get_ref()
     evaluations = [
         weave.Evaluation(
-            name=f"{comp_model_1_name}-evaluation",
-            dataset=dataset,
-            scorers=scorers,
-            preprocess_model_input=preprocess_model_input
-        ),
-        weave.Evaluation(
-            name=f"{comp_model_2_name}-evaluation",
+            name=f"{comp_model_name}-evaluation",
             dataset=dataset,
             scorers=scorers,
             preprocess_model_input=preprocess_model_input
@@ -335,9 +318,9 @@ async def main(config_path: str = "config.yaml"):
     ]
     
     # Models list
-    models = [comparison_model_1, comparison_model_2, qwen_base]
-    model_names = [comp_model_1_name, comp_model_2_name, "qwen-base"]
-    display_names = [comp_model_1_name, comp_model_2_name, "OpenPipe/Qwen3-14B-Instruct base"]
+    models = [comparison_model, qwen_base]
+    model_names = [comp_model_name, "qwen-base"]
+    display_names = [comp_model_name, "OpenPipe/Qwen3-14B-Instruct base"]
     
     # Run evaluations
     results = {}
@@ -388,7 +371,7 @@ This leaderboard compares the performance of different models on the email searc
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[0]).uri(),
                     scorer_name="score_tool_usage",
-                    summary_metric_path="tool_appropriate_rate.mean",
+                    summary_metric_path="tool_optimal_rate.mean",
                 ),
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[0]).uri(),
@@ -409,7 +392,7 @@ This leaderboard compares the performance of different models on the email searc
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[1]).uri(),
                     scorer_name="score_tool_usage",
-                    summary_metric_path="tool_appropriate_rate.mean",
+                    summary_metric_path="tool_optimal_rate.mean",
                 ),
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[1]).uri(),
@@ -430,7 +413,7 @@ This leaderboard compares the performance of different models on the email searc
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[2]).uri(),
                     scorer_name="score_tool_usage",
-                    summary_metric_path="tool_appropriate_rate.mean",
+                    summary_metric_path="tool_optimal_rate.mean",
                 ),
                 leaderboard.LeaderboardColumn(
                     evaluation_object_ref=get_ref(evaluations[2]).uri(),

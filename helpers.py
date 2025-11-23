@@ -540,17 +540,14 @@ def _add_tool_usage_metrics(traj: ProjectTrajectory):
         traj: The trajectory to add metrics to
     """
     if not traj.tool_evaluations:
-        traj.metrics["tool_appropriate_rate"] = 0.0
         traj.metrics["tool_optimal_rate"] = 0.0
         return
     
-    # Count tool calls by appropriateness
+    # Count tool calls by optimality
     total = len(traj.tool_evaluations)
-    appropriate_count = sum(1 for eval in traj.tool_evaluations if eval["appropriate"] == 1.0)
     optimal_count = sum(1 for eval in traj.tool_evaluations if eval["label"] == "optimal")
     
     # Add aggregate metrics
-    traj.metrics["tool_appropriate_rate"] = appropriate_count / total if total > 0 else 0.0
     traj.metrics["tool_optimal_rate"] = optimal_count / total if total > 0 else 0.0
 
 

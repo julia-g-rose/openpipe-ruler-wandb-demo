@@ -51,6 +51,7 @@ async def main(config_path: str = "config.yaml"):
     # Initialize W&B run with config
     lr_str = f"{training_config['learning_rate']:.0e}".replace('-0', '-')  # Format like 1e-5
     run_name = f"train-d{training_config['training_dataset_size']}-v{training_config['validation_dataset_size']}-g{training_config['groups_per_step']}-r{training_config['rollouts_per_group']}-lr{lr_str}-{datetime.now().strftime('%Y%m%d-%H%M')}"
+    run_name = "test-dataset-artifact"
     run = wandb.init(
         project=training_config["project"],
         name=run_name,
@@ -60,7 +61,7 @@ async def main(config_path: str = "config.yaml"):
     
     # Declare the model
     model = art.TrainableModel(
-        name="email-agent-qwen-art-trainable-model",
+        name="email-agent-qwen-art-trainable-model-v2",
         project=run.config.project,
         base_model=run.config.base_model,
     )
@@ -211,50 +212,51 @@ async def main(config_path: str = "config.yaml"):
                     "Realism Score",
                     "model_output",
                     "model_source_ids",
-                    "model_explanation",
                     "judge_correct",
                     "judge_reasoning",
                     "ruler_reward",
                     "retrieved_correct_sources",
-                    "tool_appropriate_rate",
+                    "tool_optimal_rate",
+                    "tool_reasoning",
                 ]
             )
             
-            for scenario, group in zip(validation_scenarios, judged_validation_groups):
+            for scenario, group, finished_group in zip(validation_scenarios, judged_validation_groups, finished_validation_groups):
                 # Get the first (and only) trajectory from the group
                 if len(group.trajectories) > 0:
-                    traj = group.trajectories[0]
+                    traj = group.trajectories[0]  # For RULER rewards and metrics
+                    finished_traj = finished_group.trajectories[0]  # For original trajectory data
                     
-                    # Extract metrics for this step
-                    model_output = traj.final_answer.answer if traj.final_answer else ""
-                    source_ids = str(traj.final_answer.source_ids) if traj.final_answer else "[]"
+                    # Extract metrics for this step - use finished_traj for final_answer
+                    model_output = finished_traj.final_answer.answer if finished_traj.final_answer else ""
+                    source_ids = str(finished_traj.final_answer.source_ids) if finished_traj.final_answer else "[]"
                     
-                    # Extract model's explanation from the last assistant message before final answer
-                    model_explanation = ""
-                    if traj.messages_and_choices:
-                        for msg in reversed(traj.messages_and_choices):
-                            if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
-                                model_explanation = msg.get("content", "")
-                                break
-                            elif hasattr(msg, "message") and msg.message.role == "assistant" and msg.message.content:
-                                model_explanation = msg.message.content
-                                break
+                    # Extract tool reasoning from finished trajectory
+                    if hasattr(finished_traj, 'tool_evaluations') and finished_traj.tool_evaluations:
+                        tool_reasoning_parts = []
+                        for i, eval in enumerate(finished_traj.tool_evaluations, 1):
+                            tool_reasoning_parts.append(
+                                f"[{i}] {eval['tool_name']} ({eval['label']}): {eval['reasoning']}"
+                            )
+                        tool_reasoning = "\n\n".join(tool_reasoning_parts)
+                    else:
+                        tool_reasoning = ""
                     
                     judge_correct = traj.metrics.get("correct", 0.0)
                     judge_reasoning = traj.metadata.get("judge_reasoning", "")
                     ruler_reward = traj.reward
                     retrieved_correct_sources = traj.metrics.get("retrieved_correct_sources", 0.0)
-                    tool_appropriate_rate = traj.metrics.get("tool_appropriate_rate", 0.0)
+                    tool_optimal_rate = traj.metrics.get("tool_optimal_rate", 0.0)
                 else:
                     # Handle case where trajectory failed
                     model_output = ""
                     source_ids = "[]"
-                    model_explanation = ""
+                    tool_reasoning = ""
                     judge_correct = 0.0
                     judge_reasoning = ""
                     ruler_reward = 0.0
                     retrieved_correct_sources = 0.0
-                    tool_appropriate_rate = 0.0
+                    tool_optimal_rate = 0.0
                 
                 # Add row to the table
                 step_validation_table.add_data(
@@ -267,12 +269,12 @@ async def main(config_path: str = "config.yaml"):
                     scenario.how_realistic,
                     model_output,
                     source_ids,
-                    model_explanation,
                     judge_correct,
                     judge_reasoning,
                     ruler_reward,
                     retrieved_correct_sources,
-                    tool_appropriate_rate,
+                    tool_optimal_rate,
+                    tool_reasoning,
                 )
             
             # Log the table as an artifact - W&B will track changes over time

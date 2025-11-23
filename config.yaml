@@ -2,12 +2,13 @@
 # This file defines all hyperparameters and settings for the training run
 
 # Model configuration
-project: "julia-openpipe-wandb-email-agent-demo-v18"
+# project: "julia-openpipe-wandb-email-agent-demo-v18"
+project: "email-agent-pipeline-test"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
-training_dataset_size: 50  # Number of training scenarios to load
-validation_dataset_size: 20  # Number of validation scenarios to load
+training_dataset_size: 5  # Number of training scenarios to load
+validation_dataset_size: 5  # Number of validation scenarios to load
 dataset_seed: 42  # Random seed for dataset shuffling
 
 # Dataset artifacts
@@ -20,8 +21,7 @@ correctness_judge_model: "openai/gpt-5"  # Used for evaluating answer correctnes
 tool_judge_model: "openai/gpt-5"  # Used for evaluating tool call appropriateness
 
 # Comparison models (for compare_models.py)
-comparison_model_1: "gpt-4o"  # First model for leaderboard comparison
-comparison_model_2: "gpt-5"  # Second model for leaderboard comparison
+comparison_model: "gpt-5"  # Second model for leaderboard comparison
 
 # Training hyperparameters
 groups_per_step: 2
@@ -30,7 +30,7 @@ rollouts_per_group: 4
 learning_rate: 1.0e-5
 
 # Validation and evaluation
-validation_step_interval: 5
+validation_step_interval: 1
 
 # Checkpointing
 save_checkpoint_artifact: true  # Save checkpoints as W&B artifacts
