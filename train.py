@@ -170,6 +170,9 @@ async def main(config_path: str = "config.yaml"):
         # Explicitly log training metrics together for scatter plot compatibility
         # Calculate aggregate metrics from judged_groups
         all_train_trajectories = [t for g in judged_groups for t in g.trajectories]
+        # Get original finished trajectories for completion token counts
+        all_finished_train_trajectories = [t for g in finished_train_groups for t in g.trajectories]
+        
         if all_train_trajectories:
             # Calculate reward statistics
             train_rewards = [t.reward for t in all_train_trajectories]
@@ -180,10 +183,10 @@ async def main(config_path: str = "config.yaml"):
             avg_train_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             avg_train_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             
-            # Calculate total completion tokens
+            # Calculate total completion tokens from the original finished trajectories
             total_train_completion_tokens = sum(
                 t.metadata.get("completion_tokens", 0) if hasattr(t, 'metadata') else 0
-                for t in all_train_trajectories
+                for t in all_finished_train_trajectories
             )
             
             # Extract training step metrics (loss, grad_norm, entropy) if available
@@ -252,16 +255,19 @@ async def main(config_path: str = "config.yaml"):
             
             # Explicitly log validation metrics together for scatter plot compatibility
             all_val_trajectories = [t for g in judged_validation_groups for t in g.trajectories]
+            # Get original finished trajectories for completion token counts
+            all_finished_val_trajectories = [t for g in finished_validation_groups for t in g.trajectories]
+            
             if all_val_trajectories:
                 avg_val_reward = sum(t.reward for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_correct = sum(t.metrics.get("correct", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 
-                # Calculate total completion tokens across all validation trajectories
+                # Calculate total completion tokens from the original finished validation trajectories
                 total_val_completion_tokens = sum(
                     t.metadata.get("completion_tokens", 0) if hasattr(t, 'metadata') else 0 
-                    for t in all_val_trajectories
+                    for t in all_finished_val_trajectories
                 )
                 
                 # Log all validation metrics together in the same step
@@ -277,60 +283,201 @@ async def main(config_path: str = "config.yaml"):
                 # Create scatter plots for correlation analysis with per-trajectory data
                 # Build data table with individual trajectory metrics
                 scatter_data = []
-                for traj in all_val_trajectories:
-                    ruler_score = traj.reward
-                    correct = traj.metrics.get("correct", 0.0)
-                    retrieved_sources = traj.metrics.get("retrieved_correct_sources", 0.0)
-                    tool_optimal = traj.metrics.get("tool_optimal_rate", 0.0)
-                    completion_tokens = traj.metadata.get("completion_tokens", 0) if hasattr(traj, 'metadata') else 0
+                for judged_traj, finished_traj in zip(all_val_trajectories, all_finished_val_trajectories):
+                    ruler_score = judged_traj.reward
+                    correct = judged_traj.metrics.get("correct", 0.0)
+                    retrieved_sources = judged_traj.metrics.get("retrieved_correct_sources", 0.0)
+                    tool_optimal = judged_traj.metrics.get("tool_optimal_rate", 0.0)
+                    # Get completion tokens from the original finished trajectory
+                    completion_tokens = finished_traj.metadata.get("completion_tokens", 0) if hasattr(finished_traj, 'metadata') else 0
                     
                     scatter_data.append([
                         ruler_score, correct, retrieved_sources, tool_optimal, completion_tokens
                     ])
                 
-                scatter_table = wandb.Table(
-                    data=scatter_data,
-                    columns=["ruler_score", "correct", "retrieved_correct_sources", "tool_optimal_rate", "completion_tokens"]
-                )
+                scatter_columns = ["ruler_score", "correct", "retrieved_correct_sources", "tool_optimal_rate", "completion_tokens"]
                 
-                # RULER Score Correlations panel
+                # Helper function to create bar chart comparing correct vs incorrect
+                def create_correctness_bar_chart(metric_col, metric_label, title):
+                    # Group data by correct (1.0) vs incorrect (0.0)
+                    col_index_map = {col: i for i, col in enumerate(scatter_columns)}
+                    correct_idx = col_index_map["correct"]
+                    metric_idx = col_index_map[metric_col]
+                    
+                    correct_values = []
+                    incorrect_values = []
+                    
+                    for row in scatter_data:
+                        if row[correct_idx] == 1.0:
+                            correct_values.append(row[metric_idx])
+                        else:
+                            incorrect_values.append(row[metric_idx])
+                    
+                    # Calculate averages
+                    avg_correct = sum(correct_values) / len(correct_values) if correct_values else 0
+                    avg_incorrect = sum(incorrect_values) / len(incorrect_values) if incorrect_values else 0
+                    
+                    # Create bar chart data
+                    bar_data = [
+                        {"category": "Correct", "value": avg_correct, "count": len(correct_values)},
+                        {"category": "Incorrect", "value": avg_incorrect, "count": len(incorrect_values)}
+                    ]
+                    
+                    # Build Vega-Lite bar chart specification
+                    vega_spec = {
+                        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                        "title": title,
+                        "width": 400,
+                        "height": 300,
+                        "data": {"values": bar_data},
+                        "mark": {
+                            "type": "bar",
+                            "color": "#3b82f6",
+                            "opacity": 0.8
+                        },
+                        "encoding": {
+                            "x": {
+                                "field": "category",
+                                "type": "nominal",
+                                "axis": {"title": "Prediction Result", "labelAngle": 0}
+                            },
+                            "y": {
+                                "field": "value",
+                                "type": "quantitative",
+                                "axis": {"title": metric_label}
+                            },
+                            "tooltip": [
+                                {"field": "category", "type": "nominal", "title": "Category"},
+                                {"field": "value", "type": "quantitative", "format": ".3f", "title": metric_label},
+                                {"field": "count", "type": "quantitative", "title": "Count"}
+                            ]
+                        }
+                    }
+                    
+                    # Return HTML with embedded Vega-Lite spec
+                    html = f"""
+                    <html>
+                    <head>
+                        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+                        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+                        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+                    </head>
+                    <body>
+                        <div id="vis"></div>
+                        <script type="text/javascript">
+                            var spec = {json.dumps(vega_spec)};
+                            vegaEmbed('#vis', spec);
+                        </script>
+                    </body>
+                    </html>
+                    """
+                    return wandb.Html(html)
+                
+                def create_four_quadrant_heatmap(title):
+                    """Create a 2x2 heatmap showing correctness vs retrieved sources"""
+                    # Get column indices
+                    col_index_map = {col: i for i, col in enumerate(scatter_columns)}
+                    correct_idx = col_index_map["correct"]
+                    retrieved_idx = col_index_map["retrieved_correct_sources"]
+                    
+                    # Count cases in each quadrant
+                    correct_retrieved = 0
+                    correct_not_retrieved = 0
+                    incorrect_retrieved = 0
+                    incorrect_not_retrieved = 0
+                    
+                    for row in scatter_data:
+                        is_correct = row[correct_idx] == 1.0
+                        has_retrieved = row[retrieved_idx] > 0
+                        
+                        if is_correct and has_retrieved:
+                            correct_retrieved += 1
+                        elif is_correct and not has_retrieved:
+                            correct_not_retrieved += 1
+                        elif not is_correct and has_retrieved:
+                            incorrect_retrieved += 1
+                        else:
+                            incorrect_not_retrieved += 1
+                    
+                    # Create heatmap data - 2x2 grid
+                    heatmap_data = [
+                        {"Correctness": "Correct", "Retrieved": "Retrieved", "count": correct_retrieved},
+                        {"Correctness": "Correct", "Retrieved": "Not Retrieved", "count": correct_not_retrieved},
+                        {"Correctness": "Incorrect", "Retrieved": "Retrieved", "count": incorrect_retrieved},
+                        {"Correctness": "Incorrect", "Retrieved": "Not Retrieved", "count": incorrect_not_retrieved}
+                    ]
+                    
+                    # Build Vega-Lite heatmap specification
+                    vega_spec = {
+                        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                        "title": title,
+                        "width": 400,
+                        "height": 300,
+                        "data": {"values": heatmap_data},
+                        "mark": "rect",
+                        "encoding": {
+                            "x": {
+                                "field": "Retrieved",
+                                "type": "nominal",
+                                "axis": {"title": "Retrieved Correct Sources", "labelAngle": 0}
+                            },
+                            "y": {
+                                "field": "Correctness",
+                                "type": "nominal",
+                                "axis": {"title": "Answer Correctness"}
+                            },
+                            "color": {
+                                "field": "count",
+                                "type": "quantitative",
+                                "scale": {"scheme": "blues"},
+                                "legend": {"title": "Count"}
+                            },
+                            "tooltip": [
+                                {"field": "Correctness", "type": "nominal", "title": "Correctness"},
+                                {"field": "Retrieved", "type": "nominal", "title": "Retrieved Sources"},
+                                {"field": "count", "type": "quantitative", "title": "Count"}
+                            ]
+                        }
+                    }
+                    
+                    # Return HTML with embedded Vega-Lite spec
+                    html = f"""
+                    <html>
+                    <head>
+                        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+                        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+                        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+                    </head>
+                    <body>
+                        <div id="vis"></div>
+                        <script type="text/javascript">
+                            var spec = {json.dumps(vega_spec)};
+                            vegaEmbed('#vis', spec);
+                        </script>
+                    </body>
+                    </html>
+                    """
+                    return wandb.Html(html)
+                
+                # Correctness Correlations panel - Bar charts comparing correct vs incorrect
                 wandb.log({
-                    "ruler_score_correlations/ruler_vs_tool_optimal": wandb.plot.scatter(
-                        scatter_table,
+                    "correctness_correlations/correct_vs_tool_optimal": create_correctness_bar_chart(
                         "tool_optimal_rate",
-                        "ruler_score",
-                        title="RULER Score vs Tool Optimal Rate"
+                        "Average Tool Optimal Rate",
+                        "Tool Optimal Rate: Correct vs Incorrect"
                     ),
-                    "ruler_score_correlations/ruler_vs_correct": wandb.plot.scatter(
-                        scatter_table,
-                        "correct",
-                        "ruler_score",
-                        title="RULER Score vs Correctness"
+                    "correctness_correlations/correct_vs_retrieved_sources": create_four_quadrant_heatmap(
+                        "Correctness vs Retrieved Sources Distribution"
                     ),
-                    "ruler_score_correlations/ruler_vs_retrieved_sources": wandb.plot.scatter(
-                        scatter_table,
-                        "retrieved_correct_sources",
-                        "ruler_score",
-                        title="RULER Score vs Retrieved Correct Sources"
-                    ),
-                    # Correctness Correlations panel
-                    "correctness_correlations/correct_vs_tool_optimal": wandb.plot.scatter(
-                        scatter_table,
-                        "tool_optimal_rate",
-                        "correct",
-                        title="Correctness vs Tool Optimal Rate"
-                    ),
-                    "correctness_correlations/correct_vs_retrieved_sources": wandb.plot.scatter(
-                        scatter_table,
-                        "retrieved_correct_sources",
-                        "correct",
-                        title="Correctness vs Retrieved Correct Sources"
-                    ),
-                    "correctness_correlations/correct_vs_completion_tokens": wandb.plot.scatter(
-                        scatter_table,
+                    "correctness_correlations/correct_vs_completion_tokens": create_correctness_bar_chart(
                         "completion_tokens",
-                        "correct",
-                        title="Correctness vs Completion Tokens"
+                        "Average Completion Tokens",
+                        "Completion Tokens: Correct vs Incorrect"
+                    ),
+                    "correctness_correlations/correct_vs_ruler_score": create_correctness_bar_chart(
+                        "ruler_score",
+                        "Average RULER Score",
+                        "RULER Score: Correct vs Incorrect"
                     ),
                 }, step=batch.step)
             

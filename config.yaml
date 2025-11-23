@@ -4,7 +4,7 @@
 # Model configuration
 # project: "julia-openpipe-wandb-email-agent-demo-v18"
 project: "email-agent-test-logging"
-model_name: "email-agent-qwen-art-trainable-model-v4"
+model_name: "email-agent-qwen-art-trainable-model-v7"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
