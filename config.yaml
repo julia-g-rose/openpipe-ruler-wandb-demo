@@ -3,13 +3,13 @@
 
 # Model configuration
 # project: "julia-openpipe-wandb-email-agent-demo-v18"
-project: "email-agent-test-logging"
-model_name: "email-agent-qwen-art-trainable-model-v7"
+project: "email-agent-nov-23-demo"
+model_name: "email-agent-qwen-art-trainable-model-v8"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
-training_dataset_size: 5  # Number of training scenarios to load
-validation_dataset_size: 5  # Number of validation scenarios to load
+training_dataset_size: 50  # Number of training scenarios to load
+validation_dataset_size: 15  # Number of validation scenarios to load
 dataset_seed: 42  # Random seed for dataset shuffling
 
 # Dataset artifacts
@@ -31,7 +31,7 @@ rollouts_per_group: 4
 learning_rate: 1.0e-5
 
 # Validation and evaluation
-validation_step_interval: 1
+validation_step_interval: 10
 
 # Checkpointing
 save_checkpoint_artifact: true  # Save checkpoints as W&B artifacts
