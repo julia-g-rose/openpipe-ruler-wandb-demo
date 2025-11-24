@@ -1,18 +1,19 @@
 """
 Model comparison script using Weave evaluations and leaderboards.
 
-This script compares three models using the three Weave scorers:
-1. Model 1 (configurable, default: gpt-4o-mini)
-2. Model 2 (configurable, default: gpt-5)
-3. OpenPipe/Qwen base model (before fine-tuning)
+This script compares up to 5 models using the three Weave scorers:
+1. Comparison model (configurable, default: gpt-5)
+2. OpenPipe/Qwen base model (before fine-tuning)
+3. Trained model (if exists)
+4. Independent trained model (if exists)
 
 It uses Weave's evaluation framework to run all scorers on the validation dataset
 and creates a leaderboard for comparison. Results can be visualized with parallel
 coordinates in the W&B UI.
 
 Usage:
-    python compare_models.py                           # Uses default config.yaml
-    python compare_models.py --config custom.yaml      # Uses custom config file
+    python create_baseline_leaderboard.py                           # Uses default config.yaml
+    python create_baseline_leaderboard.py --config custom.yaml      # Uses custom config file
 """
 import argparse
 import asyncio
@@ -332,6 +333,32 @@ async def main(config_path: str = "config.yaml"):
     except Exception as e:
         print(f"ℹ️  No trained model found: {e}")
     
+    # Model 5: Try to load the independent trained model if it exists
+    trained_independent_model_wrapper = None
+    trained_independent_step = 0
+    try:
+        print("\n🔄 Checking for independent trained model...")
+        trained_independent_model = art.TrainableModel(
+            name=config["model_name"] + "-independent",
+            project=config["project"],
+            base_model=config["base_model"],
+        )
+        await trained_independent_model.register(backend)
+        trained_independent_step = await trained_independent_model.get_step()
+        
+        if trained_independent_step > 0:
+            print(f"✓ Found independent trained model at step {trained_independent_step}")
+            trained_independent_model_wrapper = ArtQwenModelWrapper(
+                model=trained_independent_model,
+                model_name=f"{config['base_model']} (independent @ step {trained_independent_step})",
+                correctness_judge_model=config["correctness_judge_model"],
+                tool_judge_model=config["tool_judge_model"]
+            )
+        else:
+            print("⚠️  Independent model exists but is at step 0 (not trained yet)")
+    except Exception as e:
+        print(f"ℹ️  No independent trained model found: {e}")
+    
     # Models list
     models = [comparison_model, qwen_base]
     model_names = [comp_model_name, "qwen-base"]
@@ -342,6 +369,12 @@ async def main(config_path: str = "config.yaml"):
         models.append(trained_model_wrapper)
         model_names.append("qwen-trained")
         display_names.append(f"OpenPipe/Qwen3-14B-Instruct (trained @ step {trained_step})")
+    
+    # Add independent trained model if it exists
+    if trained_independent_model_wrapper:
+        models.append(trained_independent_model_wrapper)
+        model_names.append("qwen-trained-independent")
+        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (independent @ step {trained_independent_step})")
     
     # Run evaluations - all models evaluated with the SAME evaluation object
     results = {}
@@ -370,7 +403,8 @@ This leaderboard compares the performance of different models on the email searc
 ### Models
 - **Comparison Model**: Configurable OpenAI model (from config, default: gpt-5)
 - **Qwen Base**: OpenPipe/Qwen3-14B-Instruct base model (before fine-tuning)
-- **Qwen Trained**: Fine-tuned model (automatically included if trained model exists)
+- **Qwen Trained**: Fine-tuned model trained with RULER rewards (automatically included if trained model exists)
+- **Qwen Independent**: Fine-tuned model trained with independent rewards (automatically included if independent trained model exists)
 
 ### Metrics
 1. **Correctness**: Whether the model's answer matches the expected answer
