@@ -19,7 +19,6 @@ from datetime import datetime
 import wandb
 import art
 from art.serverless.backend import ServerlessBackend
-from art.rewards import ruler_score_group
 from art.utils import iterate_dataset
 
 from helpers import EmailScenario, rollout, initialize_weave
@@ -187,35 +186,24 @@ async def main(config_path: str = "config.yaml"):
             max_exceptions=run.config.rollouts_per_group * len(batch.items),
         )
 
-        # Use RULER to assign relative scores to each trajectory
-        judged_groups = []
+        # Apply independent rewards to each trajectory (no RULER scoring)
         for group in finished_train_groups:
-            # Score with RULER first
-            judged_group = await ruler_score_group(group, run.config.ruler_judge_model, debug=True)
-            
-            # Add independent rewards on top of RULER scores
-            for traj in judged_group.trajectories:
+            for traj in group.trajectories:
                 independent_reward = calculate_independent_reward(traj)
-                # Store original RULER score in metrics for tracking
-                traj.metrics["ruler_only_score"] = traj.reward
-                # Add independent reward to RULER score
-                traj.reward += independent_reward
+                # Set the reward to the independent reward
+                traj.reward = independent_reward
                 # Store independent reward in metrics for tracking
                 traj.metrics["independent_reward"] = independent_reward
-            
-            judged_groups.append(judged_group)
 
-        # Train the model on the judged trajectories
+        # Train the model on the trajectories with independent rewards
         await model.train(
-            judged_groups,
+            finished_train_groups,
             config=art.TrainConfig(learning_rate=run.config.learning_rate),
         )
         
         # Explicitly log training metrics together for scatter plot compatibility
-        # Calculate aggregate metrics from judged_groups
-        all_train_trajectories = [t for g in judged_groups for t in g.trajectories]
-        # Get original finished trajectories for completion token counts
-        all_finished_train_trajectories = [t for g in finished_train_groups for t in g.trajectories]
+        # Calculate aggregate metrics from finished_train_groups
+        all_train_trajectories = [t for g in finished_train_groups for t in g.trajectories]
         
         if all_train_trajectories:
             # Calculate reward statistics
@@ -223,25 +211,23 @@ async def main(config_path: str = "config.yaml"):
             avg_train_reward = sum(train_rewards) / len(train_rewards)
             reward_std_dev = (sum((r - avg_train_reward) ** 2 for r in train_rewards) / len(train_rewards)) ** 0.5
             
-            # Track RULER-only and independent rewards separately
-            avg_train_ruler_only = sum(t.metrics.get("ruler_only_score", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
+            # Track independent reward (same as reward in this version)
             avg_train_independent = sum(t.metrics.get("independent_reward", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             
             avg_train_correct = sum(t.metrics.get("correct", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             avg_train_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             avg_train_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             
-            # Calculate total completion tokens from the original finished trajectories
+            # Calculate total completion tokens
             total_train_completion_tokens = sum(
                 t.metadata.get("completion_tokens", 0) if hasattr(t, 'metadata') else 0
-                for t in all_finished_train_trajectories
+                for t in all_train_trajectories
             )
             
             # Extract training step metrics (loss, grad_norm, entropy) if available
             train_metrics = {
-                "train/reward": avg_train_reward,  # Combined RULER + independent
-                "train/ruler_only_score": avg_train_ruler_only,  # RULER score alone
-                "train/independent_reward": avg_train_independent,  # Independent reward alone
+                "train/reward": avg_train_reward,  # Independent reward only
+                "train/independent_reward": avg_train_independent,  # Same as reward
                 "train/correct": avg_train_correct,
                 "train/retrieved_correct_sources": avg_train_retrieved_correct_sources,
                 "train/tool_optimal_rate": avg_train_tool_optimal_rate,
@@ -291,53 +277,40 @@ async def main(config_path: str = "config.yaml"):
                 max_exceptions=run.config.rollouts_per_group * len(validation_scenarios),
             )
             
-            # Apply RULER scoring to validation groups to get rewards
-            judged_validation_groups = []
+            # Apply independent rewards to validation groups (no RULER scoring)
             for group in finished_validation_groups:
-                # Score with RULER first
-                judged_group = await ruler_score_group(group, run.config.ruler_judge_model, debug=True)
-                
-                # Add independent rewards on top of RULER scores
-                for traj in judged_group.trajectories:
+                for traj in group.trajectories:
                     independent_reward = calculate_independent_reward(traj)
-                    # Store original RULER score in metrics for tracking
-                    traj.metrics["ruler_only_score"] = traj.reward
-                    # Add independent reward to RULER score
-                    traj.reward += independent_reward
+                    # Set the reward to the independent reward
+                    traj.reward = independent_reward
                     # Store independent reward in metrics for tracking
                     traj.metrics["independent_reward"] = independent_reward
-                
-                judged_validation_groups.append(judged_group)
 
             await model.log(
-                judged_validation_groups,
+                finished_validation_groups,
                 split="val"
             )
             
             # Explicitly log validation metrics together for scatter plot compatibility
-            all_val_trajectories = [t for g in judged_validation_groups for t in g.trajectories]
-            # Get original finished trajectories for completion token counts
-            all_finished_val_trajectories = [t for g in finished_validation_groups for t in g.trajectories]
+            all_val_trajectories = [t for g in finished_validation_groups for t in g.trajectories]
             
             if all_val_trajectories:
                 avg_val_reward = sum(t.reward for t in all_val_trajectories) / len(all_val_trajectories)
-                avg_val_ruler_only = sum(t.metrics.get("ruler_only_score", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_independent = sum(t.metrics.get("independent_reward", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_correct = sum(t.metrics.get("correct", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 
-                # Calculate total completion tokens from the original finished validation trajectories
+                # Calculate total completion tokens
                 total_val_completion_tokens = sum(
                     t.metadata.get("completion_tokens", 0) if hasattr(t, 'metadata') else 0 
-                    for t in all_finished_val_trajectories
+                    for t in all_val_trajectories
                 )
                 
                 # Log all validation metrics together in the same step
                 wandb.log({
-                    "val/reward": avg_val_reward,  # Combined RULER + independent
-                    "val/ruler_only_score": avg_val_ruler_only,  # RULER score alone
-                    "val/independent_reward": avg_val_independent,  # Independent reward alone
+                    "val/reward": avg_val_reward,  # Independent reward only
+                    "val/independent_reward": avg_val_independent,  # Same as reward
                     "val/correct": avg_val_correct,
                     "val/retrieved_correct_sources": avg_val_retrieved_correct_sources,
                     "val/tool_optimal_rate": avg_val_tool_optimal_rate,
@@ -347,21 +320,19 @@ async def main(config_path: str = "config.yaml"):
                 # Create scatter plots for correlation analysis with per-trajectory data
                 # Build data table with individual trajectory metrics
                 scatter_data = []
-                for judged_traj, finished_traj in zip(all_val_trajectories, all_finished_val_trajectories):
-                    combined_reward = judged_traj.reward  # RULER + independent
-                    ruler_only_score = judged_traj.metrics.get("ruler_only_score", 0.0)
-                    independent_reward = judged_traj.metrics.get("independent_reward", 0.0)
-                    correct = judged_traj.metrics.get("correct", 0.0)
-                    retrieved_sources = judged_traj.metrics.get("retrieved_correct_sources", 0.0)
-                    tool_optimal = judged_traj.metrics.get("tool_optimal_rate", 0.0)
-                    # Get completion tokens from the original finished trajectory
-                    completion_tokens = finished_traj.metadata.get("completion_tokens", 0) if hasattr(finished_traj, 'metadata') else 0
+                for traj in all_val_trajectories:
+                    independent_reward = traj.reward  # Independent reward only
+                    correct = traj.metrics.get("correct", 0.0)
+                    retrieved_sources = traj.metrics.get("retrieved_correct_sources", 0.0)
+                    tool_optimal = traj.metrics.get("tool_optimal_rate", 0.0)
+                    # Get completion tokens
+                    completion_tokens = traj.metadata.get("completion_tokens", 0) if hasattr(traj, 'metadata') else 0
                     
                     scatter_data.append([
-                        combined_reward, ruler_only_score, independent_reward, correct, retrieved_sources, tool_optimal, completion_tokens
+                        independent_reward, correct, retrieved_sources, tool_optimal, completion_tokens
                     ])
                 
-                scatter_columns = ["combined_reward", "ruler_only_score", "independent_reward", "correct", "retrieved_correct_sources", "tool_optimal_rate", "completion_tokens"]
+                scatter_columns = ["independent_reward", "correct", "retrieved_correct_sources", "tool_optimal_rate", "completion_tokens"]
             
             # Create a new validation table for this step with consistent column names
             # This allows W&B to visualize predictions over time
@@ -378,8 +349,6 @@ async def main(config_path: str = "config.yaml"):
                     "model_source_ids",
                     "judge_correct",
                     "judge_reasoning",
-                    "combined_reward",
-                    "ruler_only_score",
                     "independent_reward",
                     "retrieved_correct_sources",
                     "tool_optimal_rate",
@@ -387,20 +356,19 @@ async def main(config_path: str = "config.yaml"):
                 ]
             )
             
-            for scenario, group, finished_group in zip(validation_scenarios, judged_validation_groups, finished_validation_groups):
+            for scenario, group in zip(validation_scenarios, finished_validation_groups):
                 # Get the first (and only) trajectory from the group
                 if len(group.trajectories) > 0:
-                    traj = group.trajectories[0]  # For RULER rewards and metrics
-                    finished_traj = finished_group.trajectories[0]  # For original trajectory data
+                    traj = group.trajectories[0]
                     
-                    # Extract metrics for this step - use finished_traj for final_answer
-                    model_output = finished_traj.final_answer.answer if finished_traj.final_answer else ""
-                    source_ids = str(finished_traj.final_answer.source_ids) if finished_traj.final_answer else "[]"
+                    # Extract metrics for this step
+                    model_output = traj.final_answer.answer if traj.final_answer else ""
+                    source_ids = str(traj.final_answer.source_ids) if traj.final_answer else "[]"
                     
-                    # Extract tool reasoning from finished trajectory
-                    if hasattr(finished_traj, 'tool_evaluations') and finished_traj.tool_evaluations:
+                    # Extract tool reasoning
+                    if hasattr(traj, 'tool_evaluations') and traj.tool_evaluations:
                         tool_reasoning_parts = []
-                        for i, eval in enumerate(finished_traj.tool_evaluations, 1):
+                        for i, eval in enumerate(traj.tool_evaluations, 1):
                             tool_reasoning_parts.append(
                                 f"[{i}] {eval['tool_name']} ({eval['label']}): {eval['reasoning']}"
                             )
@@ -410,9 +378,7 @@ async def main(config_path: str = "config.yaml"):
                     
                     judge_correct = traj.metrics.get("correct", 0.0)
                     judge_reasoning = traj.metadata.get("judge_reasoning", "")
-                    combined_reward = traj.reward  # RULER + independent
-                    ruler_only_score = traj.metrics.get("ruler_only_score", 0.0)
-                    independent_reward = traj.metrics.get("independent_reward", 0.0)
+                    independent_reward = traj.reward  # Independent reward only
                     retrieved_correct_sources = traj.metrics.get("retrieved_correct_sources", 0.0)
                     tool_optimal_rate = traj.metrics.get("tool_optimal_rate", 0.0)
                 else:
@@ -422,8 +388,6 @@ async def main(config_path: str = "config.yaml"):
                     tool_reasoning = ""
                     judge_correct = 0.0
                     judge_reasoning = ""
-                    combined_reward = 0.0
-                    ruler_only_score = 0.0
                     independent_reward = 0.0
                     retrieved_correct_sources = 0.0
                     tool_optimal_rate = 0.0
@@ -441,8 +405,6 @@ async def main(config_path: str = "config.yaml"):
                     source_ids,
                     judge_correct,
                     judge_reasoning,
-                    combined_reward,
-                    ruler_only_score,
                     independent_reward,
                     retrieved_correct_sources,
                     tool_optimal_rate,
