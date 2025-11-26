@@ -327,8 +327,8 @@ async def main(config_path: str = "config.yaml"):
                     vega_spec = {
                         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
                         "title": title,
-                        "width": 400,
-                        "height": 300,
+                        "width": "container",
+                        "height": "container",
                         "data": {"values": bar_data},
                         "mark": {
                             "type": "bar",
@@ -411,8 +411,8 @@ async def main(config_path: str = "config.yaml"):
                     vega_spec = {
                         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
                         "title": title,
-                        "width": 400,
-                        "height": 300,
+                        "width": "container",
+                        "height": "container",
                         "data": {"values": heatmap_data},
                         "mark": "rect",
                         "encoding": {

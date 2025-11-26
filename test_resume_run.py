@@ -6,13 +6,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 name = "training-with-crash"
+project = "resume-run"
 
 def simulate_training_with_crash():
     """
     Simulate a training run that crashes partway through.
     This demonstrates the need for resume functionality.
     """
-    project = "test-resume-run-v3"
     entity = "wandb"
     run_id = "test-resume-123"
     
@@ -48,7 +48,6 @@ def resume_training(run_id):
     """
     Resume the training run from where it left off.
     """
-    project = "test-resume-run-v3"
     entity = "wandb"
     
     with wandb.init(
