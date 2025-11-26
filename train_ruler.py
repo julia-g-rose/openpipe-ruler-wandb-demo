@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 
 import wandb
+import weave
 import art
 from art.serverless.backend import ServerlessBackend
 from art.rewards import ruler_score_group
@@ -32,6 +33,9 @@ from helpers import (
 )
 from enron_helpers import Scenario
 
+
+# Wrap ruler_score_group with weave.op for tracing
+ruler_score_group = weave.op(ruler_score_group)
 
 # Load environment variables
 load_dotenv()

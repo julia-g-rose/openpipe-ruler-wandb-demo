@@ -3,12 +3,12 @@
 
 # Model configuration
 project: "email-agent-openpipe-weave-models-demo"
-model_name: "qwen-art-trainable-model-email-agent-v3"
+model_name: "qwen-art-trainable-model-email-agent-pipeline-test"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
-training_dataset_size: 500  # Number of training scenarios to load (increased for better training)
-validation_dataset_size: 100  # Number of validation scenarios to load
+training_dataset_size: 5  # Number of training scenarios to load (increased for better training)
+validation_dataset_size: 5  # Number of validation scenarios to load
 dataset_seed: 42  # Random seed for dataset shuffling
 
 # Dataset artifacts
