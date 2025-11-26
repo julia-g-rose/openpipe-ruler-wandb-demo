@@ -918,8 +918,9 @@ def create_correctness_bar_chart(scatter_data: list, scatter_columns: list, metr
     vega_spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "title": title,
-        "width": "container",
-        "height": "container",
+        "width": 400,
+        "height": 300,
+        "autosize": {"type": "fit", "contains": "padding"},
         "data": {"values": bar_data},
         "mark": {
             "type": "bar",
@@ -952,12 +953,16 @@ def create_correctness_bar_chart(scatter_data: list, scatter_columns: list, metr
         <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
         <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
         <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+        <style>
+            body {{ margin: 0; padding: 10px; }}
+            #vis {{ width: 100%; height: 100%; min-height: 350px; }}
+        </style>
     </head>
     <body>
         <div id="vis"></div>
         <script type="text/javascript">
             var spec = {json.dumps(vega_spec)};
-            vegaEmbed('#vis', spec);
+            vegaEmbed('#vis', spec, {{actions: false}});
         </script>
     </body>
     </html>
@@ -1012,8 +1017,9 @@ def create_four_quadrant_heatmap(scatter_data: list, scatter_columns: list, titl
     vega_spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "title": title,
-        "width": "container",
-        "height": "container",
+        "width": 400,
+        "height": 300,
+        "autosize": {"type": "fit", "contains": "padding"},
         "data": {"values": heatmap_data},
         "mark": "rect",
         "encoding": {
@@ -1048,12 +1054,16 @@ def create_four_quadrant_heatmap(scatter_data: list, scatter_columns: list, titl
         <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
         <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
         <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+        <style>
+            body {{ margin: 0; padding: 10px; }}
+            #vis {{ width: 100%; height: 100%; min-height: 350px; }}
+        </style>
     </head>
     <body>
         <div id="vis"></div>
         <script type="text/javascript">
             var spec = {json.dumps(vega_spec)};
-            vegaEmbed('#vis', spec);
+            vegaEmbed('#vis', spec, {{actions: false}});
         </script>
     </body>
     </html>
