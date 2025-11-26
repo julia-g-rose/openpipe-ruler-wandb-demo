@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from textwrap import dedent
 
+import wandb
 import weave
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from litellm import acompletion
@@ -874,4 +875,188 @@ def print_trajectory(trajectory: ProjectTrajectory, scenario: Scenario):
 
     print(f"\nExpected Answer: {scenario.answer}")
     print(f"Expected Source IDs: {scenario.message_ids}")
+
+
+def create_correctness_bar_chart(scatter_data: list, scatter_columns: list, metric_col: str, metric_label: str, title: str) -> wandb.Html:
+    """Create a bar chart comparing a metric between correct and incorrect predictions.
+    
+    Args:
+        scatter_data: List of data rows (each row is a list matching scatter_columns)
+        scatter_columns: List of column names in scatter_data
+        metric_col: Name of the metric column to compare
+        metric_label: Label for the metric axis
+        title: Chart title
+        
+    Returns:
+        wandb.Html object containing the Vega-Lite chart
+    """
+    # Group data by correct (1.0) vs incorrect (0.0)
+    col_index_map = {col: i for i, col in enumerate(scatter_columns)}
+    correct_idx = col_index_map["correct"]
+    metric_idx = col_index_map[metric_col]
+    
+    correct_values = []
+    incorrect_values = []
+    
+    for row in scatter_data:
+        if row[correct_idx] == 1.0:
+            correct_values.append(row[metric_idx])
+        else:
+            incorrect_values.append(row[metric_idx])
+    
+    # Calculate averages
+    avg_correct = sum(correct_values) / len(correct_values) if correct_values else 0
+    avg_incorrect = sum(incorrect_values) / len(incorrect_values) if incorrect_values else 0
+    
+    # Create bar chart data
+    bar_data = [
+        {"category": "Correct", "value": avg_correct, "count": len(correct_values)},
+        {"category": "Incorrect", "value": avg_incorrect, "count": len(incorrect_values)}
+    ]
+    
+    # Build Vega-Lite bar chart specification
+    vega_spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "title": title,
+        "width": "container",
+        "height": "container",
+        "data": {"values": bar_data},
+        "mark": {
+            "type": "bar",
+            "color": "#3b82f6",
+            "opacity": 0.8
+        },
+        "encoding": {
+            "x": {
+                "field": "category",
+                "type": "nominal",
+                "axis": {"title": "Prediction Result", "labelAngle": 0}
+            },
+            "y": {
+                "field": "value",
+                "type": "quantitative",
+                "axis": {"title": metric_label}
+            },
+            "tooltip": [
+                {"field": "category", "type": "nominal", "title": "Category"},
+                {"field": "value", "type": "quantitative", "format": ".3f", "title": metric_label},
+                {"field": "count", "type": "quantitative", "title": "Count"}
+            ]
+        }
+    }
+    
+    # Return HTML with embedded Vega-Lite spec
+    html = f"""
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    </head>
+    <body>
+        <div id="vis"></div>
+        <script type="text/javascript">
+            var spec = {json.dumps(vega_spec)};
+            vegaEmbed('#vis', spec);
+        </script>
+    </body>
+    </html>
+    """
+    return wandb.Html(html)
+
+
+def create_four_quadrant_heatmap(scatter_data: list, scatter_columns: list, title: str) -> wandb.Html:
+    """Create a 2x2 heatmap showing correctness vs retrieved sources distribution.
+    
+    Args:
+        scatter_data: List of data rows (each row is a list matching scatter_columns)
+        scatter_columns: List of column names in scatter_data
+        title: Chart title
+        
+    Returns:
+        wandb.Html object containing the Vega-Lite heatmap
+    """
+    # Get column indices
+    col_index_map = {col: i for i, col in enumerate(scatter_columns)}
+    correct_idx = col_index_map["correct"]
+    retrieved_idx = col_index_map["retrieved_correct_sources"]
+    
+    # Count cases in each quadrant
+    correct_retrieved = 0
+    correct_not_retrieved = 0
+    incorrect_retrieved = 0
+    incorrect_not_retrieved = 0
+    
+    for row in scatter_data:
+        is_correct = row[correct_idx] == 1.0
+        has_retrieved = row[retrieved_idx] > 0
+        
+        if is_correct and has_retrieved:
+            correct_retrieved += 1
+        elif is_correct and not has_retrieved:
+            correct_not_retrieved += 1
+        elif not is_correct and has_retrieved:
+            incorrect_retrieved += 1
+        else:
+            incorrect_not_retrieved += 1
+    
+    # Create heatmap data - 2x2 grid
+    heatmap_data = [
+        {"Correctness": "Correct", "Retrieved": "Retrieved", "count": correct_retrieved},
+        {"Correctness": "Correct", "Retrieved": "Not Retrieved", "count": correct_not_retrieved},
+        {"Correctness": "Incorrect", "Retrieved": "Retrieved", "count": incorrect_retrieved},
+        {"Correctness": "Incorrect", "Retrieved": "Not Retrieved", "count": incorrect_not_retrieved}
+    ]
+    
+    # Build Vega-Lite heatmap specification
+    vega_spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "title": title,
+        "width": "container",
+        "height": "container",
+        "data": {"values": heatmap_data},
+        "mark": "rect",
+        "encoding": {
+            "x": {
+                "field": "Retrieved",
+                "type": "nominal",
+                "axis": {"title": "Retrieved Correct Sources", "labelAngle": 0}
+            },
+            "y": {
+                "field": "Correctness",
+                "type": "nominal",
+                "axis": {"title": "Answer Correctness"}
+            },
+            "color": {
+                "field": "count",
+                "type": "quantitative",
+                "scale": {"scheme": "blues"},
+                "legend": {"title": "Count"}
+            },
+            "tooltip": [
+                {"field": "Correctness", "type": "nominal", "title": "Correctness"},
+                {"field": "Retrieved", "type": "nominal", "title": "Retrieved Sources"},
+                {"field": "count", "type": "quantitative", "title": "Count"}
+            ]
+        }
+    }
+    
+    # Return HTML with embedded Vega-Lite spec
+    html = f"""
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+        <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    </head>
+    <body>
+        <div id="vis"></div>
+        <script type="text/javascript">
+            var spec = {json.dumps(vega_spec)};
+            vegaEmbed('#vis', spec);
+        </script>
+    </body>
+    </html>
+    """
+    return wandb.Html(html)
 

@@ -21,7 +21,13 @@ import art
 from art.serverless.backend import ServerlessBackend
 from art.utils import iterate_dataset
 
-from helpers import EmailScenario, rollout, initialize_weave
+from helpers import (
+    EmailScenario,
+    rollout,
+    initialize_weave,
+    create_correctness_bar_chart,
+    create_four_quadrant_heatmap,
+)
 from enron_helpers import Scenario
 
 
@@ -333,6 +339,38 @@ async def main(config_path: str = "config.yaml"):
                     ])
                 
                 scatter_columns = ["independent_reward", "correct", "retrieved_correct_sources", "tool_optimal_rate", "completion_tokens"]
+                
+                # Correctness Correlations panel - Bar charts comparing correct vs incorrect
+                # Only log if enabled in config
+                if run.config.get("log_correctness_correlation_plots", True):
+                    wandb.log({
+                        "correctness_correlations/correct_vs_tool_optimal": create_correctness_bar_chart(
+                            scatter_data,
+                            scatter_columns,
+                            "tool_optimal_rate",
+                            "Average Tool Optimal Rate",
+                            "Tool Optimal Rate: Correct vs Incorrect"
+                        ),
+                        "correctness_correlations/correct_vs_retrieved_sources": create_four_quadrant_heatmap(
+                            scatter_data,
+                            scatter_columns,
+                            "Correctness vs Retrieved Sources Distribution"
+                        ),
+                        "correctness_correlations/correct_vs_completion_tokens": create_correctness_bar_chart(
+                            scatter_data,
+                            scatter_columns,
+                            "completion_tokens",
+                            "Average Completion Tokens",
+                            "Completion Tokens: Correct vs Incorrect"
+                        ),
+                        "correctness_correlations/correct_vs_independent_reward": create_correctness_bar_chart(
+                            scatter_data,
+                            scatter_columns,
+                            "independent_reward",
+                            "Average Independent Reward",
+                            "Independent Reward: Correct vs Incorrect"
+                        ),
+                    }, step=batch.step)
             
             # Create a new validation table for this step with consistent column names
             # This allows W&B to visualize predictions over time
