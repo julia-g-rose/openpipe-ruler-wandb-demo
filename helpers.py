@@ -918,9 +918,8 @@ def create_correctness_bar_chart(scatter_data: list, scatter_columns: list, metr
     vega_spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "title": title,
-        "width": 400,
+        "width": "container",
         "height": 300,
-        "autosize": {"type": "fit", "contains": "padding"},
         "data": {"values": bar_data},
         "mark": {
             "type": "bar",
@@ -948,21 +947,30 @@ def create_correctness_bar_chart(scatter_data: list, scatter_columns: list, metr
     
     # Return HTML with embedded Vega-Lite spec
     html = f"""
-    <html>
+    <!DOCTYPE html>
+    <html style="height: 100%;">
     <head>
         <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
         <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
         <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
         <style>
-            body {{ margin: 0; padding: 10px; }}
-            #vis {{ width: 100%; height: 100%; min-height: 350px; }}
+            html, body {{
+                margin: 0;
+                padding: 0;
+                height: 100%;
+                width: 100%;
+            }}
+            #vis {{
+                width: 100%;
+                height: 350px;
+            }}
         </style>
     </head>
     <body>
         <div id="vis"></div>
         <script type="text/javascript">
             var spec = {json.dumps(vega_spec)};
-            vegaEmbed('#vis', spec, {{actions: false}});
+            vegaEmbed('#vis', spec, {{actions: false}}).catch(console.error);
         </script>
     </body>
     </html>
@@ -1017,9 +1025,8 @@ def create_four_quadrant_heatmap(scatter_data: list, scatter_columns: list, titl
     vega_spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "title": title,
-        "width": 400,
+        "width": "container",
         "height": 300,
-        "autosize": {"type": "fit", "contains": "padding"},
         "data": {"values": heatmap_data},
         "mark": "rect",
         "encoding": {
@@ -1049,21 +1056,30 @@ def create_four_quadrant_heatmap(scatter_data: list, scatter_columns: list, titl
     
     # Return HTML with embedded Vega-Lite spec
     html = f"""
-    <html>
+    <!DOCTYPE html>
+    <html style="height: 100%;">
     <head>
         <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
         <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
         <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
         <style>
-            body {{ margin: 0; padding: 10px; }}
-            #vis {{ width: 100%; height: 100%; min-height: 350px; }}
+            html, body {{
+                margin: 0;
+                padding: 0;
+                height: 100%;
+                width: 100%;
+            }}
+            #vis {{
+                width: 100%;
+                height: 350px;
+            }}
         </style>
     </head>
     <body>
         <div id="vis"></div>
         <script type="text/javascript">
             var spec = {json.dumps(vega_spec)};
-            vegaEmbed('#vis', spec, {{actions: false}});
+            vegaEmbed('#vis', spec, {{actions: false}}).catch(console.error);
         </script>
     </body>
     </html>

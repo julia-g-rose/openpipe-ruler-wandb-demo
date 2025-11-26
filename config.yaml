@@ -3,12 +3,12 @@
 
 # Model configuration
 project: "email-agent-openpipe-weave-models-demo"
-model_name: "qwen-art-trainable-model-email-agent"
+model_name: "qwen-art-trainable-model-email-agent-v3"
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
-training_dataset_size: 150  # Number of training scenarios to load
-validation_dataset_size: 50  # Number of validation scenarios to load
+training_dataset_size: 500  # Number of training scenarios to load (increased for better training)
+validation_dataset_size: 100  # Number of validation scenarios to load
 dataset_seed: 42  # Random seed for dataset shuffling
 
 # Dataset artifacts
@@ -24,13 +24,13 @@ tool_judge_model: "openai/gpt-5"  # Used for evaluating tool call appropriatenes
 comparison_model: "gpt-5"  # Second model for leaderboard comparison
 
 # Training hyperparameters
-groups_per_step: 2
-num_epochs: 1
-rollouts_per_group: 4
-learning_rate: 1.0e-5
+groups_per_step: 4  # Increased from 2 for more scenarios per update
+num_epochs: 5  # Increased from 1 for more training iterations
+rollouts_per_group: 4  # Balanced for RULER signal vs API reliability
+learning_rate: 5.0e-6  # Decreased from 1.0e-5 for more stable updates
 
 # Validation and evaluation
-validation_step_interval: 25
+validation_step_interval: 25  # Decreased from 25 for more frequent validation
 log_correctness_correlation_plots: true  # Log correlation plots comparing correct vs incorrect predictions
 
 # Checkpointing

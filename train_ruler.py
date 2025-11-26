@@ -9,6 +9,7 @@ Usage:
     python train.py --config custom.yaml      # Uses custom config file
 """
 import argparse
+import asyncio
 import json
 import random
 import yaml
@@ -161,11 +162,26 @@ async def main(config_path: str = "config.yaml"):
             max_exceptions=run.config.rollouts_per_group * len(batch.items),
         )
 
-        # Use RULER to assign relative scores to each trajectory
+        # Use RULER to assign relative scores to each trajectory with timeout handling
         judged_groups = []
-        for group in finished_train_groups:
-            judged_group = await ruler_score_group(group, run.config.ruler_judge_model, debug=True)
-            judged_groups.append(judged_group)
+        for i, group in enumerate(finished_train_groups):
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # Set a 10 minute timeout for RULER scoring
+                    async with asyncio.timeout(600):
+                        judged_group = await ruler_score_group(group, run.config.ruler_judge_model, debug=True)
+                        judged_groups.append(judged_group)
+                        break
+                except (asyncio.TimeoutError, Exception) as e:
+                    if attempt < max_retries - 1:
+                        print(f"⚠️  RULER scoring timeout/error for group {i+1}/{len(finished_train_groups)} (attempt {attempt+1}/{max_retries}): {e}")
+                        print(f"   Retrying in {(attempt + 1) * 5} seconds...")
+                        await asyncio.sleep((attempt + 1) * 5)
+                    else:
+                        print(f"❌ RULER scoring failed after {max_retries} attempts for group {i+1}. Skipping this group.")
+                        # Skip this group if all retries fail
+                        continue
 
         # Train the model on the judged trajectories
         await model.train(
@@ -248,11 +264,26 @@ async def main(config_path: str = "config.yaml"):
                 max_exceptions=run.config.rollouts_per_group * len(validation_scenarios),
             )
             
-            # Apply RULER scoring to validation groups to get rewards
+            # Apply RULER scoring to validation groups to get rewards with timeout handling
             judged_validation_groups = []
-            for group in finished_validation_groups:
-                judged_group = await ruler_score_group(group, run.config.ruler_judge_model, debug=True)
-                judged_validation_groups.append(judged_group)
+            for i, group in enumerate(finished_validation_groups):
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        # Set a 10 minute timeout for RULER scoring
+                        async with asyncio.timeout(600):
+                            judged_group = await ruler_score_group(group, run.config.ruler_judge_model, debug=True)
+                            judged_validation_groups.append(judged_group)
+                            break
+                    except (asyncio.TimeoutError, Exception) as e:
+                        if attempt < max_retries - 1:
+                            print(f"⚠️  Validation RULER timeout/error for group {i+1}/{len(finished_validation_groups)} (attempt {attempt+1}/{max_retries}): {e}")
+                            print(f"   Retrying in {(attempt + 1) * 5} seconds...")
+                            await asyncio.sleep((attempt + 1) * 5)
+                        else:
+                            print(f"❌ Validation RULER failed after {max_retries} attempts for group {i+1}. Skipping this scenario.")
+                            # Skip this validation scenario if all retries fail
+                            continue
 
             await model.log(
                 judged_validation_groups,
