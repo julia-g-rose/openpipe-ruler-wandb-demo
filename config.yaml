@@ -3,7 +3,9 @@
 
 # Model configuration
 project: "email-agent-openpipe-weave-models-demo"
-model_name: "qwen-art-trainable-model-email-agent-v3"
+model_name_ruler: "qwen-art-trainable-model-email-agent-v4"  # For RULER training
+model_name_independent: "qwen-art-trainable-model-email-agent-independent"  # For independent reward training
+model_name_combined: "qwen-art-trainable-model-email-agent-combined"  # For combined RULER + independent rewards
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
@@ -25,7 +27,7 @@ comparison_model: "gpt-5"  # Second model for leaderboard comparison
 
 # Training hyperparameters
 groups_per_step: 4  # Increased from 2 for more scenarios per update
-num_epochs: 5  # Increased from 1 for more training iterations
+num_epochs: 1 
 rollouts_per_group: 4  # Balanced for RULER signal vs API reliability
 learning_rate: 5.0e-6  # Decreased from 1.0e-5 for more stable updates
 

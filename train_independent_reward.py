@@ -97,7 +97,7 @@ async def main(config_path: str = "config.yaml"):
     
     # Declare the model
     model = art.TrainableModel(
-        name=run.config.model_name + "-independent",
+        name=run.config.model_name_independent,
         project=run.config.project,
         base_model=run.config.base_model,
     )
@@ -201,11 +201,30 @@ async def main(config_path: str = "config.yaml"):
                 # Store independent reward in metrics for tracking
                 traj.metrics["independent_reward"] = independent_reward
 
-        # Train the model on the trajectories with independent rewards
-        await model.train(
-            finished_train_groups,
-            config=art.TrainConfig(learning_rate=run.config.learning_rate),
-        )
+        # Train the model on the trajectories with independent rewards and timeout handling
+        max_retries = 3
+        train_success = False
+        for attempt in range(max_retries):
+            try:
+                # Set a 30 minute timeout for training step
+                async with asyncio.timeout(1800):
+                    await model.train(
+                        finished_train_groups,
+                        config=art.TrainConfig(learning_rate=run.config.learning_rate),
+                    )
+                    train_success = True
+                    break
+            except (asyncio.TimeoutError, Exception) as e:
+                if attempt < max_retries - 1:
+                    print(f"⚠️  Training timeout/error (attempt {attempt+1}/{max_retries}): {e}")
+                    print(f"   Retrying in {(attempt + 1) * 10} seconds...")
+                    await asyncio.sleep((attempt + 1) * 10)
+                else:
+                    print(f"❌ Training failed after {max_retries} attempts. Skipping this batch.")
+
+        if not train_success:
+            print("⚠️  Skipping metrics logging for this step due to training failure")
+            continue
         
         # Explicitly log training metrics together for scatter plot compatibility
         # Calculate aggregate metrics from finished_train_groups

@@ -1,19 +1,20 @@
 """
 Model comparison script using Weave evaluations and leaderboards.
 
-This script compares up to 5 models using the three Weave scorers:
+This script compares up to 6 models using the three Weave scorers:
 1. Comparison model (configurable, default: gpt-5)
 2. OpenPipe/Qwen base model (before fine-tuning)
-3. Trained model (if exists)
+3. Trained model with RULER (if exists)
 4. Independent trained model (if exists)
+5. Combined trained model with RULER + independent rewards (if exists)
 
 It uses Weave's evaluation framework to run all scorers on the validation dataset
 and creates a leaderboard for comparison. Results can be visualized with parallel
 coordinates in the W&B UI.
 
 Usage:
-    python create_baseline_leaderboard.py                           # Uses default config.yaml
-    python create_baseline_leaderboard.py --config custom.yaml      # Uses custom config file
+    python create_leaderboard.py                           # Uses default config.yaml
+    python create_leaderboard.py --config custom.yaml      # Uses custom config file
 """
 import argparse
 import asyncio
@@ -313,7 +314,7 @@ async def main(config_path: str = "config.yaml"):
     try:
         print("\n🔄 Checking for trained model...")
         trained_model = art.TrainableModel(
-            name=config["model_name"],
+            name=config["model_name_ruler"],
             project=config["project"],
             base_model=config["base_model"],
         )
@@ -339,7 +340,7 @@ async def main(config_path: str = "config.yaml"):
     try:
         print("\n🔄 Checking for independent trained model...")
         trained_independent_model = art.TrainableModel(
-            name=config["model_name"] + "-independent",
+            name=config["model_name_independent"],
             project=config["project"],
             base_model=config["base_model"],
         )
@@ -359,6 +360,32 @@ async def main(config_path: str = "config.yaml"):
     except Exception as e:
         print(f"ℹ️  No independent trained model found: {e}")
     
+    # Model 6: Try to load the combined trained model if it exists
+    trained_combined_model_wrapper = None
+    trained_combined_step = 0
+    try:
+        print("\n🔄 Checking for combined trained model...")
+        trained_combined_model = art.TrainableModel(
+            name=config["model_name_combined"],
+            project=config["project"],
+            base_model=config["base_model"],
+        )
+        await trained_combined_model.register(backend)
+        trained_combined_step = await trained_combined_model.get_step()
+        
+        if trained_combined_step > 0:
+            print(f"✓ Found combined trained model at step {trained_combined_step}")
+            trained_combined_model_wrapper = ArtQwenModelWrapper(
+                model=trained_combined_model,
+                model_name=f"{config['base_model']} (combined @ step {trained_combined_step})",
+                correctness_judge_model=config["correctness_judge_model"],
+                tool_judge_model=config["tool_judge_model"]
+            )
+        else:
+            print("⚠️  Combined model exists but is at step 0 (not trained yet)")
+    except Exception as e:
+        print(f"ℹ️  No combined trained model found: {e}")
+    
     # Models list
     models = [comparison_model, qwen_base]
     model_names = [comp_model_name, "qwen-base"]
@@ -375,6 +402,12 @@ async def main(config_path: str = "config.yaml"):
         models.append(trained_independent_model_wrapper)
         model_names.append("qwen-trained-independent")
         display_names.append(f"OpenPipe/Qwen3-14B-Instruct (independent @ step {trained_independent_step})")
+    
+    # Add combined trained model if it exists
+    if trained_combined_model_wrapper:
+        models.append(trained_combined_model_wrapper)
+        model_names.append("qwen-trained-combined")
+        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (combined @ step {trained_combined_step})")
     
     # Run evaluations - all models evaluated with the SAME evaluation object
     results = {}
@@ -405,6 +438,7 @@ This leaderboard compares the performance of different models on the email searc
 - **Qwen Base**: OpenPipe/Qwen3-14B-Instruct base model (before fine-tuning)
 - **Qwen Trained**: Fine-tuned model trained with RULER rewards (automatically included if trained model exists)
 - **Qwen Independent**: Fine-tuned model trained with independent rewards (automatically included if independent trained model exists)
+- **Qwen Combined**: Fine-tuned model trained with RULER + independent rewards combined (automatically included if combined trained model exists)
 
 ### Metrics
 1. **Correctness**: Whether the model's answer matches the expected answer
