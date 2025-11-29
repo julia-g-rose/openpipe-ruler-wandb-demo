@@ -143,21 +143,49 @@ async def main(config_path: str = "config.yaml"):
 
     # Main training loop
     for batch in training_iterator:
-        # Create trajectory groups for this batch
+        # Create trajectory groups for this batch with timeout protection and retries
         train_groups = []
         for scenario in batch.items:
-            train_groups.append(
-                art.TrajectoryGroup(
-                    (
-                        rollout(
-                            model, 
-                            EmailScenario(step=batch.step, scenario=scenario),
-                            correctness_judge_model=run.config.correctness_judge_model
-                        )
-                        for _ in range(run.config.rollouts_per_group)
-                    )
-                )
-            )
+            async def create_rollouts_with_timeout(scenario):
+                """Create rollouts with per-rollout timeout protection and retry logic."""
+                rollouts = []
+                for i in range(run.config.rollouts_per_group):
+                    max_retries = 3
+                    rollout_timeout = run.config.get("rollout_timeout", 600)
+                    
+                    for attempt in range(max_retries):
+                        # Use shorter timeout on retries
+                        timeout_seconds = rollout_timeout if attempt == 0 else rollout_timeout // 2
+                        
+                        try:
+                            async with asyncio.timeout(timeout_seconds):
+                                rollout_result = await rollout(
+                                    model, 
+                                    EmailScenario(step=batch.step, scenario=scenario),
+                                    correctness_judge_model=run.config.correctness_judge_model,
+                                    inference_timeout=run.config.get("inference_timeout", 300),
+                                    scorer_timeout=run.config.get("scorer_timeout", 60)
+                                )
+                                rollouts.append(rollout_result)
+                                break  # Success, exit retry loop
+                        except asyncio.TimeoutError:
+                            if attempt < max_retries - 1:
+                                print(f"⚠️  Rollout {i+1}/{run.config.rollouts_per_group} timeout after {timeout_seconds}s for scenario {scenario.id} (attempt {attempt+1}/{max_retries}), retrying...")
+                            else:
+                                print(f"❌ Rollout {i+1}/{run.config.rollouts_per_group} timeout after {max_retries} attempts for scenario {scenario.id}, skipping")
+                        except Exception as e:
+                            if attempt < max_retries - 1:
+                                print(f"⚠️  Rollout {i+1}/{run.config.rollouts_per_group} failed with error: {e} (attempt {attempt+1}/{max_retries}), retrying...")
+                            else:
+                                print(f"❌ Rollout {i+1}/{run.config.rollouts_per_group} failed after {max_retries} attempts: {e}")
+                
+                return rollouts
+            
+            rollout_list = await create_rollouts_with_timeout(scenario)
+            if rollout_list:  # Only add if we have at least one valid rollout
+                train_groups.append(art.TrajectoryGroup(rollout_list))
+            else:
+                print(f"❌ All rollouts failed for scenario {scenario.id}, skipping this scenario")
 
         # Gather all trajectory groups
         finished_train_groups = await art.gather_trajectory_groups(
@@ -271,15 +299,42 @@ async def main(config_path: str = "config.yaml"):
         if batch.step % run.config.validation_step_interval == 0:
             validation_groups = []
             for scenario in validation_scenarios:
-                validation_groups.append(
-                    art.TrajectoryGroup([
-                        rollout(
-                            model, 
-                            EmailScenario(step=batch.step, scenario=scenario),
-                            correctness_judge_model=run.config.correctness_judge_model
-                        )
-                    ])
-                )
+                async def create_validation_rollout(scenario):
+                    """Create validation rollout with timeout protection and retry logic."""
+                    max_retries = 3
+                    rollout_timeout = run.config.get("rollout_timeout", 600)
+                    
+                    for attempt in range(max_retries):
+                        # Use shorter timeout on retries
+                        timeout_seconds = rollout_timeout if attempt == 0 else rollout_timeout // 2
+                        
+                        try:
+                            async with asyncio.timeout(timeout_seconds):
+                                return await rollout(
+                                    model, 
+                                    EmailScenario(step=batch.step, scenario=scenario),
+                                    correctness_judge_model=run.config.correctness_judge_model,
+                                    inference_timeout=run.config.get("inference_timeout", 300),
+                                    scorer_timeout=run.config.get("scorer_timeout", 60)
+                                )
+                        except asyncio.TimeoutError:
+                            if attempt < max_retries - 1:
+                                print(f"⚠️  Validation rollout timeout after {timeout_seconds}s for scenario {scenario.id} (attempt {attempt+1}/{max_retries}), retrying...")
+                            else:
+                                print(f"❌ Validation rollout timeout after {max_retries} attempts for scenario {scenario.id}")
+                                return None
+                        except Exception as e:
+                            if attempt < max_retries - 1:
+                                print(f"⚠️  Validation rollout failed: {e} (attempt {attempt+1}/{max_retries}), retrying...")
+                            else:
+                                print(f"❌ Validation rollout failed after {max_retries} attempts: {e}")
+                                return None
+                    
+                    return None
+                
+                val_rollout = await create_validation_rollout(scenario)
+                if val_rollout:
+                    validation_groups.append(art.TrajectoryGroup([val_rollout]))
 
             finished_validation_groups = await art.gather_trajectory_groups(
                 validation_groups,
