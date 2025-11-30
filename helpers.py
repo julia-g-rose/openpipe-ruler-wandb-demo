@@ -627,12 +627,10 @@ async def rollout(
             }
         
         # Add timeout protection to prevent indefinite hangs
-        try:
-            async with asyncio.timeout(inference_timeout):
-                return await client.chat.completions.create(**kwargs)
-        except asyncio.TimeoutError:
-            print(f"⚠️  Model inference timeout after {inference_timeout}s")
-            raise APITimeoutError(f"Inference exceeded {inference_timeout}s timeout")
+        # Note: We don't wrap in asyncio.timeout here because it would trigger
+        # the retry decorator's exponential backoff, making things slower.
+        # The httpx client already has a 5-minute timeout configured.
+        return await client.chat.completions.create(**kwargs)
 
     for turn_num in range(MAX_TURNS):
         # Force final answer on the last turn if we haven't gotten one yet
@@ -652,20 +650,12 @@ async def rollout(
             # Evaluate the decision to NOT make a tool call
             assistant_text = response_message.content or ""
             
-            # Add timeout protection for scorer
-            try:
-                async with asyncio.timeout(scorer_timeout):
-                    no_tool_evaluation = await tool_scorer.score_no_tool_call(
-                        conversation_history=traj.messages(),
-                        assistant_response=assistant_text,
-                        user_query=scenario.question
-                    )
-            except asyncio.TimeoutError:
-                print(f"⚠️  No-tool-call scorer timeout after {scorer_timeout}s, using default")
-                no_tool_evaluation = {
-                    "label": "error",
-                    "reasoning": f"Scorer timeout after {scorer_timeout}s"
-                }
+            # Scorer has its own retry logic with exponential backoff
+            no_tool_evaluation = await tool_scorer.score_no_tool_call(
+                conversation_history=traj.messages(),
+                assistant_response=assistant_text,
+                user_query=scenario.question
+            )
             
             # Store the evaluation
             traj.tool_evaluations.append({
@@ -697,24 +687,17 @@ async def rollout(
                         }
                     )
                     
-                    # Evaluate this tool call using the LLM judge with timeout protection
-                    try:
-                        async with asyncio.timeout(scorer_timeout):
-                            tool_evaluation = await tool_scorer.score(
-                                conversation_history=traj.messages(),
-                                tool_call={
-                                    "name": tool_name,
-                                    "arguments": tool_call.function.arguments
-                                },
-                                tool_result=result_str,
-                                user_query=scenario.question
-                            )
-                    except asyncio.TimeoutError:
-                        print(f"⚠️  Tool scorer timeout after {scorer_timeout}s for {tool_name}, using default")
-                        tool_evaluation = {
-                            "label": "error",
-                            "reasoning": f"Scorer timeout after {scorer_timeout}s"
-                        }
+                    # Evaluate this tool call using the LLM judge
+                    # Scorer has its own retry logic with exponential backoff
+                    tool_evaluation = await tool_scorer.score(
+                        conversation_history=traj.messages(),
+                        tool_call={
+                            "name": tool_name,
+                            "arguments": tool_call.function.arguments
+                        },
+                        tool_result=result_str,
+                        user_query=scenario.question
+                    )
                     
                     # Store the evaluation with metadata
                     traj.tool_evaluations.append({
@@ -729,20 +712,15 @@ async def rollout(
                         # Score the trajectory using Weave scorers with timeout protection
                         if traj.final_answer:
                             # Score answer correctness
+                            # Scorer has its own retry logic with exponential backoff
                             correctness_scorer = CorrectnessJudgeScorer(judge_model=correctness_judge_model)
-                            try:
-                                async with asyncio.timeout(scorer_timeout):
-                                    correctness_result = await correctness_scorer.score(
-                                        output=traj.final_answer.answer,
-                                        question=scenario.question,
-                                        reference_answer=scenario.answer
-                                    )
-                                    traj.metrics["correct"] = correctness_result["correct"]
-                                    traj.metadata["judge_reasoning"] = correctness_result["reasoning"]
-                            except asyncio.TimeoutError:
-                                print(f"⚠️  Correctness scorer timeout after {scorer_timeout}s, using default score")
-                                traj.metrics["correct"] = 0.0
-                                traj.metadata["judge_reasoning"] = f"Scorer timeout after {scorer_timeout}s"
+                            correctness_result = await correctness_scorer.score(
+                                output=traj.final_answer.answer,
+                                question=scenario.question,
+                                reference_answer=scenario.answer
+                            )
+                            traj.metrics["correct"] = correctness_result["correct"]
+                            traj.metadata["judge_reasoning"] = correctness_result["reasoning"]
                             
                             # Score source retrieval quality (fast, no timeout needed)
                             source_scorer = SourceRetrievalScorer()
@@ -797,24 +775,17 @@ async def rollout(
                             "content": str(result),
                         })
                         
-                        # Evaluate the forced tool call with timeout protection
-                        try:
-                            async with asyncio.timeout(scorer_timeout):
-                                tool_evaluation = await tool_scorer.score(
-                                    conversation_history=traj.messages(),
-                                    tool_call={
-                                        "name": tool_name,
-                                        "arguments": tool_call.function.arguments
-                                    },
-                                    tool_result=str(result),
-                                    user_query=scenario.question
-                                )
-                        except asyncio.TimeoutError:
-                            print(f"⚠️  Tool scorer timeout after {scorer_timeout}s (forced answer), using default")
-                            tool_evaluation = {
-                                "label": "error",
-                                "reasoning": f"Scorer timeout after {scorer_timeout}s"
-                            }
+                        # Evaluate the forced tool call
+                        # Scorer has its own retry logic with exponential backoff
+                        tool_evaluation = await tool_scorer.score(
+                            conversation_history=traj.messages(),
+                            tool_call={
+                                "name": tool_name,
+                                "arguments": tool_call.function.arguments
+                            },
+                            tool_result=str(result),
+                            user_query=scenario.question
+                        )
                         
                         traj.tool_evaluations.append({
                             "tool_name": tool_name,
@@ -825,20 +796,16 @@ async def rollout(
                         
                         # Score the final answer with timeout protection
                         if traj.final_answer:
+                            # Score answer correctness
+                            # Scorer has its own retry logic with exponential backoff
                             correctness_scorer = CorrectnessJudgeScorer(judge_model=correctness_judge_model)
-                            try:
-                                async with asyncio.timeout(scorer_timeout):
-                                    correctness_result = await correctness_scorer.score(
-                                        output=traj.final_answer.answer,
-                                        question=scenario.question,
-                                        reference_answer=scenario.answer
-                                    )
-                                    traj.metrics["correct"] = correctness_result["correct"]
-                                    traj.metadata["judge_reasoning"] = correctness_result["reasoning"]
-                            except asyncio.TimeoutError:
-                                print(f"⚠️  Correctness scorer timeout after {scorer_timeout}s (forced answer), using default")
-                                traj.metrics["correct"] = 0.0
-                                traj.metadata["judge_reasoning"] = f"Scorer timeout after {scorer_timeout}s"
+                            correctness_result = await correctness_scorer.score(
+                                output=traj.final_answer.answer,
+                                question=scenario.question,
+                                reference_answer=scenario.answer
+                            )
+                            traj.metrics["correct"] = correctness_result["correct"]
+                            traj.metadata["judge_reasoning"] = correctness_result["reasoning"]
                             
                             source_scorer = SourceRetrievalScorer()
                             source_result = await source_scorer.score(
