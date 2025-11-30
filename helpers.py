@@ -528,9 +528,7 @@ async def rollout(
     model: art.Model, 
     email_scenario: EmailScenario,
     correctness_judge_model: str = "openai/gpt-4o",
-    tool_judge_model: str = "openai/gpt-4o",
-    inference_timeout: int = 300,
-    scorer_timeout: int = 60
+    tool_judge_model: str = "openai/gpt-4o"
 ) -> ProjectTrajectory:
     """
     Execute a rollout of the email search agent on a given scenario.
