@@ -16,18 +16,25 @@ and creates a leaderboard for comparison. New models are automatically added to
 the leaderboard by running evaluations with the same evaluation object.
 
 Usage:
-    # Evaluate all models and create/update leaderboard
-    python create_leaderboard.py
+    # FIRST TIME: Create and publish the leaderboard with initial models
+    python create_leaderboard.py --models openai base --publish-leaderboard
     
-    # Evaluate only the independent model (e.g., after it finishes training)
-    python create_leaderboard.py --models independent
+    # ADDING NEW ROWS: Evaluate additional models WITHOUT publishing
+    # This adds new model results as rows to the existing leaderboard
+    python create_leaderboard.py --models ruler independent
     
-    # Evaluate multiple specific models
-    python create_leaderboard.py --models independent combined
+    # OVERWRITING: Re-publish the leaderboard (overwrites existing one)
+    # Only use this if you want to update the leaderboard definition/description
+    python create_leaderboard.py --models openai base ruler independent --publish-leaderboard
     
     # Use custom config file
     python create_leaderboard.py --config custom.yaml --models ruler
 
+Important:
+    - Use --publish-leaderboard ONLY the first time to create the leaderboard
+    - After that, running evaluations WITHOUT the flag adds new rows to the existing leaderboard
+    - Using --publish-leaderboard again OVERWRITES the existing leaderboard
+    
 Model options: openai, base, ruler, independent, combined, all
 """
 import argparse
@@ -334,12 +341,13 @@ def score_tool_usage(model_output: dict) -> dict:
     }
 
 
-async def main(config_path: str = "config.yaml", models_to_eval: list = None):
+async def main(config_path: str = "config.yaml", models_to_eval: list = None, publish_leaderboard: bool = False):
     """Main comparison function.
     
     Args:
         config_path: Path to the YAML configuration file
         models_to_eval: List of model names to evaluate (default: all)
+        publish_leaderboard: Whether to publish the leaderboard (default: False)
     """
     if models_to_eval is None:
         models_to_eval = ["all"]
@@ -418,14 +426,22 @@ async def main(config_path: str = "config.yaml", models_to_eval: list = None):
     # Get model names from config
     comp_model_name = config["comparison_model"]
     
-    # Create ONE evaluation object that will be shared by all models
+    # Try to load existing evaluation object, or create new one if it doesn't exist
     # This ensures all models appear as rows under the same columns in the leaderboard
-    shared_evaluation = weave.Evaluation(
-        name="email-agent-evaluation",  # Single shared evaluation name
-        dataset=dataset,
-        scorers=scorers,
-        preprocess_model_input=preprocess_model_input
-    )
+    # and that the leaderboard automatically updates with new evaluation results
+    try:
+        # Try to get the latest version of the evaluation object
+        shared_evaluation = weave.ref("email-agent-evaluation").get()
+        print("\n✓ Loaded existing evaluation object - new results will automatically appear in leaderboard")
+    except Exception as e:
+        # If it doesn't exist, create a new one
+        print(f"\n⚠️  Could not load existing evaluation object, creating new one: {e}")
+        shared_evaluation = weave.Evaluation(
+            name="email-agent-evaluation",  # Single shared evaluation name
+            dataset=dataset,
+            scorers=scorers,
+            preprocess_model_input=preprocess_model_input
+        )
     
     # Model 4: Try to load the RULER-trained model if it exists
     trained_ruler_model_wrapper = None
@@ -632,8 +648,18 @@ Each trained model uses a unique wrapper class to display separately in the lead
                 ],
             )
             
-            leaderboard_ref = weave.publish(leaderboard_spec)
-            print(f"\n📊 Leaderboard published: {leaderboard_ref}")
+            if publish_leaderboard:
+                # WARNING: Publishing overwrites the existing leaderboard definition
+                # Use this only for initial creation or when updating the leaderboard structure
+                leaderboard_ref = weave.publish(leaderboard_spec)
+                print(f"\n📊 Leaderboard published: {leaderboard_ref}")
+            else:
+                # Not publishing - evaluation results are still saved and will appear as new rows
+                # in the existing leaderboard (if it was published previously)
+                print("\n⏭️  Leaderboard spec created but not published")
+                print("    Evaluation results are saved and will appear in the existing leaderboard")
+                print("    Use --publish-leaderboard only if you want to overwrite the leaderboard definition")
+                leaderboard_ref = None
         except Exception as e:
             print(f"\n❌ Failed to create leaderboard: {e}")
             import traceback
@@ -662,10 +688,17 @@ if __name__ == "__main__":
         default=["all"],
         help="Which models to evaluate. Options: openai, base, ruler, independent, combined, all (default: all)"
     )
+    parser.add_argument(
+        "--publish-leaderboard",
+        action="store_true",
+        default=False,
+        help="Publish/overwrite the leaderboard definition. Use ONLY for initial creation or to update the leaderboard structure. Omit this flag to simply add new model rows to existing leaderboard. (default: False)"
+    )
     args = parser.parse_args()
     
     asyncio.run(main(
         config_path=args.config,
-        models_to_eval=args.models
+        models_to_eval=args.models,
+        publish_leaderboard=args.publish_leaderboard
     ))
 
