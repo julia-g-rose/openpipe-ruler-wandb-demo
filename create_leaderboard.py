@@ -94,10 +94,25 @@ class ArtQwenBaseModelWrapper(weave.Model):
     tool_judge_model: str
     
     @weave.op()
-    async def predict(self, scenario: dict) -> dict:
-        """Run the model on a scenario and return raw trajectory data for scoring."""
-        # Convert dict to Scenario object
-        scenario_obj = Scenario(**scenario)
+    async def predict(self, id, question, answer, message_ids, how_realistic, inbox_address, query_date, split) -> dict:
+        """Run the model on a scenario and return raw trajectory data for scoring.
+        
+        Note: Weave passes dataset rows as individual kwargs (id=..., question=..., etc.).
+        We removed preprocess_model_input from the Evaluation to allow proper serialization.
+        """
+        print(f"[DEBUG] ArtQwenBaseModelWrapper.predict called (scenario_id={id})")
+        
+        # Convert individual fields to Scenario object
+        scenario_obj = Scenario(
+            id=id,
+            question=question,
+            answer=answer,
+            message_ids=message_ids,
+            how_realistic=how_realistic,
+            inbox_address=inbox_address,
+            query_date=query_date,
+            split=split
+        )
         email_scenario = EmailScenario(step=0, scenario=scenario_obj)
         
         trajectory = await rollout(
@@ -114,6 +129,11 @@ class ArtQwenBaseModelWrapper(weave.Model):
             "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
         }
         
+        print(f"[DEBUG] ArtQwenBaseModelWrapper.predict completed - "
+              f"answer={'present' if result['answer'] else 'empty'}, "
+              f"sources={len(result['source_ids'])}, "
+              f"tool_evals={len(trajectory.tool_evaluations) if trajectory.tool_evaluations else 0}")
+        
         return result
 
 
@@ -126,10 +146,23 @@ class ArtQwenRulerTrainedModelWrapper(weave.Model):
     tool_judge_model: str
     
     @weave.op()
-    async def predict(self, scenario: dict) -> dict:
-        """Run the model on a scenario and return raw trajectory data for scoring."""
-        # Convert dict to Scenario object
-        scenario_obj = Scenario(**scenario)
+    async def predict(self, id, question, answer, message_ids, how_realistic, inbox_address, query_date, split) -> dict:
+        """Run the model on a scenario and return raw trajectory data for scoring.
+        
+        Note: Weave passes dataset rows as individual kwargs (id=..., question=..., etc.).
+        We removed preprocess_model_input from the Evaluation to allow proper serialization.
+        """
+        # Convert individual fields to Scenario object
+        scenario_obj = Scenario(
+            id=id,
+            question=question,
+            answer=answer,
+            message_ids=message_ids,
+            how_realistic=how_realistic,
+            inbox_address=inbox_address,
+            query_date=query_date,
+            split=split
+        )
         email_scenario = EmailScenario(step=0, scenario=scenario_obj)
         
         trajectory = await rollout(
@@ -158,10 +191,23 @@ class ArtQwenIndependentTrainedModelWrapper(weave.Model):
     tool_judge_model: str
     
     @weave.op()
-    async def predict(self, scenario: dict) -> dict:
-        """Run the model on a scenario and return raw trajectory data for scoring."""
-        # Convert dict to Scenario object
-        scenario_obj = Scenario(**scenario)
+    async def predict(self, id, question, answer, message_ids, how_realistic, inbox_address, query_date, split) -> dict:
+        """Run the model on a scenario and return raw trajectory data for scoring.
+        
+        Note: Weave passes dataset rows as individual kwargs (id=..., question=..., etc.).
+        We removed preprocess_model_input from the Evaluation to allow proper serialization.
+        """
+        # Convert individual fields to Scenario object
+        scenario_obj = Scenario(
+            id=id,
+            question=question,
+            answer=answer,
+            message_ids=message_ids,
+            how_realistic=how_realistic,
+            inbox_address=inbox_address,
+            query_date=query_date,
+            split=split
+        )
         email_scenario = EmailScenario(step=0, scenario=scenario_obj)
         
         trajectory = await rollout(
@@ -190,10 +236,23 @@ class ArtQwenCombinedTrainedModelWrapper(weave.Model):
     tool_judge_model: str
     
     @weave.op()
-    async def predict(self, scenario: dict) -> dict:
-        """Run the model on a scenario and return raw trajectory data for scoring."""
-        # Convert dict to Scenario object
-        scenario_obj = Scenario(**scenario)
+    async def predict(self, id, question, answer, message_ids, how_realistic, inbox_address, query_date, split) -> dict:
+        """Run the model on a scenario and return raw trajectory data for scoring.
+        
+        Note: Weave passes dataset rows as individual kwargs (id=..., question=..., etc.).
+        We removed preprocess_model_input from the Evaluation to allow proper serialization.
+        """
+        # Convert individual fields to Scenario object
+        scenario_obj = Scenario(
+            id=id,
+            question=question,
+            answer=answer,
+            message_ids=message_ids,
+            how_realistic=how_realistic,
+            inbox_address=inbox_address,
+            query_date=query_date,
+            split=split
+        )
         email_scenario = EmailScenario(step=0, scenario=scenario_obj)
         
         trajectory = await rollout(
@@ -221,14 +280,28 @@ class OpenAIModelWrapper(weave.Model):
     tool_judge_model: str
     
     @weave.op()
-    async def predict(self, scenario: dict) -> dict:
+    async def predict(self, id, question, answer, message_ids, how_realistic, inbox_address, query_date, split) -> dict:
         """Run OpenAI model on a scenario and return raw trajectory data for scoring.
         
         This uses a mock ART model that wraps OpenAI's API,
         then runs the full rollout with tool calling.
+        
+        Note: Weave passes dataset rows as individual kwargs (id=..., question=..., etc.).
+        We removed preprocess_model_input from the Evaluation to allow proper serialization.
         """
-        # Convert dict to Scenario object
-        scenario_obj = Scenario(**scenario)
+        print(f"[DEBUG] OpenAIModelWrapper.predict called (scenario_id={id})")
+        
+        # Convert individual fields to Scenario object
+        scenario_obj = Scenario(
+            id=id,
+            question=question,
+            answer=answer,
+            message_ids=message_ids,
+            how_realistic=how_realistic,
+            inbox_address=inbox_address,
+            query_date=query_date,
+            split=split
+        )
         email_scenario = EmailScenario(step=0, scenario=scenario_obj)
         
         # Create a mock ART model that wraps OpenAI
@@ -249,6 +322,11 @@ class OpenAIModelWrapper(weave.Model):
             "answer": trajectory.final_answer.answer if trajectory.final_answer else "",
             "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
         }
+        
+        print(f"[DEBUG] OpenAIModelWrapper.predict completed - "
+              f"answer={'present' if result['answer'] else 'empty'}, "
+              f"sources={len(result['source_ids'])}, "
+              f"tool_evals={len(trajectory.tool_evaluations) if trajectory.tool_evaluations else 0}")
         
         return result
 
@@ -272,11 +350,14 @@ def create_correctness_scorer(judge_model: str):
         This uses the actual scoring logic defined in helpers.CorrectnessJudgeScorer
         (line 132) rather than extracting pre-computed metrics.
         """
+        print(f"[DEBUG] score_correctness called - output_keys={list(model_output.keys()) if model_output else 'empty'}")
+        
         trajectory = model_output.get("trajectory")
         scenario = model_output.get("scenario")
         answer = model_output.get("answer", "")
         
         if not scenario:
+            print("[DEBUG] score_correctness FAILED: missing scenario!")
             return {"correct": 0.0, "reasoning": "Missing scenario data"}
         
         # Initialize and use the actual scorer from helpers.py
@@ -286,6 +367,8 @@ def create_correctness_scorer(judge_model: str):
             question=scenario.question,
             reference_answer=scenario.answer
         )
+        
+        print(f"[DEBUG] score_correctness completed - correct={result.get('correct', 'N/A')}")
         return result
     
     return score_correctness
@@ -301,7 +384,10 @@ async def score_source_retrieval(model_output: dict) -> dict:
     scenario = model_output.get("scenario")
     source_ids = model_output.get("source_ids", [])
     
+    print(f"[DEBUG] score_source_retrieval called - retrieved={len(source_ids)}, expected={len(scenario.message_ids) if scenario else 0}")
+    
     if not scenario:
+        print("[DEBUG] score_source_retrieval FAILED: missing scenario!")
         return {
             "retrieved_correct_sources": 0.0
         }
@@ -312,6 +398,8 @@ async def score_source_retrieval(model_output: dict) -> dict:
         output={"source_ids": source_ids},
         expected_source_ids=scenario.message_ids
     )
+    
+    print(f"[DEBUG] score_source_retrieval completed - score={result.get('retrieved_correct_sources', 'N/A')}")
     return result
 
 
@@ -328,6 +416,7 @@ def score_tool_usage(model_output: dict) -> dict:
     trajectory = model_output.get("trajectory")
     
     if not trajectory or not trajectory.tool_evaluations:
+        print(f"[DEBUG] score_tool_usage called - FAILED: no tool_evaluations (trajectory={'present' if trajectory else 'missing'})")
         return {
             "tool_optimal_rate": 0.0
         }
@@ -335,9 +424,12 @@ def score_tool_usage(model_output: dict) -> dict:
     # Aggregate tool evaluations using the same logic as _add_tool_usage_metrics
     total = len(trajectory.tool_evaluations)
     optimal_count = sum(1 for eval in trajectory.tool_evaluations if eval["label"] == "optimal")
+    tool_rate = optimal_count / total if total > 0 else 0.0
+    
+    print(f"[DEBUG] score_tool_usage called - optimal={optimal_count}/{total}, rate={tool_rate:.2f}")
     
     return {
-        "tool_optimal_rate": optimal_count / total if total > 0 else 0.0
+        "tool_optimal_rate": tool_rate
     }
 
 
@@ -410,11 +502,6 @@ async def main(config_path: str = "config.yaml", models_to_eval: list = None, pu
             tool_judge_model=config["tool_judge_model"]
         )
     
-    # Preprocessing function to convert dataset rows to model input format
-    def preprocess_model_input(example: dict) -> dict:
-        """Convert dataset example to the format expected by model predict methods."""
-        return {"scenario": example}
-    
     # Common scorers for all evaluations
     # These use the actual scorer classes from helpers.py
     scorers = [
@@ -422,13 +509,25 @@ async def main(config_path: str = "config.yaml", models_to_eval: list = None, pu
         score_source_retrieval,
         score_tool_usage
     ]
+    print(f"\n✓ Created {len(scorers)} scorers")
     
     # Get model names from config
     comp_model_name = config["comparison_model"]
     
+    print(f"\n{'='*80}")
+    print("EVALUATION SETUP")
+    print(f"{'='*80}")
+    print(f"Comparison model: {comp_model_name}")
+    print(f"Correctness judge: {config['correctness_judge_model']}")
+    print(f"Tool judge: {config['tool_judge_model']}")
+    print(f"Dataset: enron-validation-scenarios")
+    
     # Try to load existing evaluation object, or create new one if it doesn't exist
     # This ensures all models appear as rows under the same columns in the leaderboard
     # and that the leaderboard automatically updates with new evaluation results
+    #
+    # IMPORTANT: We removed preprocess_model_input from the Evaluation to allow
+    # proper serialization. The model wrappers now handle preprocessing directly.
     try:
         # Try to get the latest version of the evaluation object
         shared_evaluation = weave.ref("email-agent-evaluation").get()
@@ -439,8 +538,8 @@ async def main(config_path: str = "config.yaml", models_to_eval: list = None, pu
         shared_evaluation = weave.Evaluation(
             name="email-agent-evaluation",  # Single shared evaluation name
             dataset=dataset,
-            scorers=scorers,
-            preprocess_model_input=preprocess_model_input
+            scorers=scorers
+            # Note: No preprocess_model_input - models handle preprocessing in their predict() methods
         )
     
     # Model 4: Try to load the RULER-trained model if it exists
@@ -571,8 +670,10 @@ async def main(config_path: str = "config.yaml", models_to_eval: list = None, pu
     if not models:
         print("\n⚠️  No models to evaluate. Use --models to specify which models to evaluate.")
     else:
-        for model, model_name, display_name in zip(models, model_names, display_names):
-            print(f"\n🔄 Evaluating {display_name}...")
+        for idx, (model, model_name, display_name) in enumerate(zip(models, model_names, display_names), 1):
+            print(f"\n{'='*80}")
+            print(f"🔄 Evaluating Model {idx}/{len(models)}: {display_name}")
+            print(f"{'='*80}")
             
             # Run evaluation - all using the shared evaluation
             eval_result = await shared_evaluation.evaluate(
@@ -580,6 +681,9 @@ async def main(config_path: str = "config.yaml", models_to_eval: list = None, pu
                 __weave={"display_name": display_name}
             )
             results[model_name] = eval_result
+            
+            print(f"\n✅ Completed evaluation for: {display_name}")
+            print(f"   Results summary: {eval_result}")
         
         print("\n✅ All evaluations complete!")
     
