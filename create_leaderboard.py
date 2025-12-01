@@ -78,48 +78,6 @@ class OpenAIArtModel:
         return self.model_name
 
 
-class ArtQwenModelWrapper(weave.Model):
-    """Wrapper to make ART models compatible with Weave evaluations."""
-    
-    model: Any
-    model_name: str
-    correctness_judge_model: str
-    tool_judge_model: str
-    
-    @weave.op()
-    async def predict(self, scenario: dict) -> dict:
-        """Run the model on a scenario and return raw trajectory data for scoring.
-        
-        Args:
-            scenario: Dict containing scenario information
-            
-        Returns:
-            Dict with trajectory data and scenario for scoring
-        """
-        # Convert dict to Scenario object
-        scenario_obj = Scenario(**scenario)
-        email_scenario = EmailScenario(step=0, scenario=scenario_obj)
-        
-        # Run rollout WITHOUT pre-computing scores (we'll do that in the scorers)
-        # Note: We still need the rollout to do tool evaluation for ToolUsageScorer
-        trajectory = await rollout(
-            self.model,
-            email_scenario,
-            correctness_judge_model=self.correctness_judge_model,
-            tool_judge_model=self.tool_judge_model
-        )
-        
-        # Return raw data for scorers to process
-        result = {
-            "trajectory": trajectory,
-            "scenario": scenario_obj,
-            "answer": trajectory.final_answer.answer if trajectory.final_answer else "",
-            "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
-        }
-        
-        return result
-
-
 class ArtQwenBaseModelWrapper(weave.Model):
     """Wrapper for the base (untrained) Qwen model."""
     
