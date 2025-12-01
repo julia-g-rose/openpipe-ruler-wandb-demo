@@ -1,20 +1,34 @@
 """
 Model comparison script using Weave evaluations and leaderboards.
 
-This script compares up to 6 models using the three Weave scorers:
+This script compares up to 5 models using three Weave scorers:
 1. Comparison model (configurable, default: gpt-5)
 2. OpenPipe/Qwen base model (before fine-tuning)
-3. Trained model with RULER (if exists)
-4. Independent trained model (if exists)
+3. RULER-trained model (if exists)
+4. Independent reward trained model (if exists)
 5. Combined trained model with RULER + independent rewards (if exists)
 
+Each trained model uses a separate wrapper class to appear as a unique entry
+in the leaderboard with a readable display name.
+
 It uses Weave's evaluation framework to run all scorers on the validation dataset
-and creates a leaderboard for comparison. Results can be visualized with parallel
-coordinates in the W&B UI.
+and creates a leaderboard for comparison. New models are automatically added to
+the leaderboard by running evaluations with the same evaluation object.
 
 Usage:
-    python create_leaderboard.py                           # Uses default config.yaml
-    python create_leaderboard.py --config custom.yaml      # Uses custom config file
+    # Evaluate all models and create/update leaderboard
+    python create_leaderboard.py
+    
+    # Evaluate only the independent model (e.g., after it finishes training)
+    python create_leaderboard.py --models independent
+    
+    # Evaluate multiple specific models
+    python create_leaderboard.py --models independent combined
+    
+    # Use custom config file
+    python create_leaderboard.py --config custom.yaml --models ruler
+
+Model options: openai, base, ruler, independent, combined, all
 """
 import argparse
 import asyncio
@@ -96,6 +110,134 @@ class ArtQwenModelWrapper(weave.Model):
         )
         
         # Return raw data for scorers to process
+        result = {
+            "trajectory": trajectory,
+            "scenario": scenario_obj,
+            "answer": trajectory.final_answer.answer if trajectory.final_answer else "",
+            "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
+        }
+        
+        return result
+
+
+class ArtQwenBaseModelWrapper(weave.Model):
+    """Wrapper for the base (untrained) Qwen model."""
+    
+    model: Any
+    model_name: str
+    correctness_judge_model: str
+    tool_judge_model: str
+    
+    @weave.op()
+    async def predict(self, scenario: dict) -> dict:
+        """Run the model on a scenario and return raw trajectory data for scoring."""
+        # Convert dict to Scenario object
+        scenario_obj = Scenario(**scenario)
+        email_scenario = EmailScenario(step=0, scenario=scenario_obj)
+        
+        trajectory = await rollout(
+            self.model,
+            email_scenario,
+            correctness_judge_model=self.correctness_judge_model,
+            tool_judge_model=self.tool_judge_model
+        )
+        
+        result = {
+            "trajectory": trajectory,
+            "scenario": scenario_obj,
+            "answer": trajectory.final_answer.answer if trajectory.final_answer else "",
+            "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
+        }
+        
+        return result
+
+
+class ArtQwenRulerTrainedModelWrapper(weave.Model):
+    """Wrapper for the RULER-trained Qwen model."""
+    
+    model: Any
+    model_name: str
+    correctness_judge_model: str
+    tool_judge_model: str
+    
+    @weave.op()
+    async def predict(self, scenario: dict) -> dict:
+        """Run the model on a scenario and return raw trajectory data for scoring."""
+        # Convert dict to Scenario object
+        scenario_obj = Scenario(**scenario)
+        email_scenario = EmailScenario(step=0, scenario=scenario_obj)
+        
+        trajectory = await rollout(
+            self.model,
+            email_scenario,
+            correctness_judge_model=self.correctness_judge_model,
+            tool_judge_model=self.tool_judge_model
+        )
+        
+        result = {
+            "trajectory": trajectory,
+            "scenario": scenario_obj,
+            "answer": trajectory.final_answer.answer if trajectory.final_answer else "",
+            "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
+        }
+        
+        return result
+
+
+class ArtQwenIndependentTrainedModelWrapper(weave.Model):
+    """Wrapper for the independent reward trained Qwen model."""
+    
+    model: Any
+    model_name: str
+    correctness_judge_model: str
+    tool_judge_model: str
+    
+    @weave.op()
+    async def predict(self, scenario: dict) -> dict:
+        """Run the model on a scenario and return raw trajectory data for scoring."""
+        # Convert dict to Scenario object
+        scenario_obj = Scenario(**scenario)
+        email_scenario = EmailScenario(step=0, scenario=scenario_obj)
+        
+        trajectory = await rollout(
+            self.model,
+            email_scenario,
+            correctness_judge_model=self.correctness_judge_model,
+            tool_judge_model=self.tool_judge_model
+        )
+        
+        result = {
+            "trajectory": trajectory,
+            "scenario": scenario_obj,
+            "answer": trajectory.final_answer.answer if trajectory.final_answer else "",
+            "source_ids": trajectory.final_answer.source_ids if trajectory.final_answer else [],
+        }
+        
+        return result
+
+
+class ArtQwenCombinedTrainedModelWrapper(weave.Model):
+    """Wrapper for the combined (RULER + independent rewards) trained Qwen model."""
+    
+    model: Any
+    model_name: str
+    correctness_judge_model: str
+    tool_judge_model: str
+    
+    @weave.op()
+    async def predict(self, scenario: dict) -> dict:
+        """Run the model on a scenario and return raw trajectory data for scoring."""
+        # Convert dict to Scenario object
+        scenario_obj = Scenario(**scenario)
+        email_scenario = EmailScenario(step=0, scenario=scenario_obj)
+        
+        trajectory = await rollout(
+            self.model,
+            email_scenario,
+            correctness_judge_model=self.correctness_judge_model,
+            tool_judge_model=self.tool_judge_model
+        )
+        
         result = {
             "trajectory": trajectory,
             "scenario": scenario_obj,
@@ -234,12 +376,18 @@ def score_tool_usage(model_output: dict) -> dict:
     }
 
 
-async def main(config_path: str = "config.yaml"):
+async def main(config_path: str = "config.yaml", models_to_eval: list = None):
     """Main comparison function.
     
     Args:
         config_path: Path to the YAML configuration file
+        models_to_eval: List of model names to evaluate (default: all)
     """
+    if models_to_eval is None:
+        models_to_eval = ["all"]
+    
+    # If "all" is in the list, evaluate all models
+    eval_all = "all" in models_to_eval
     
     # Load configuration
     config = load_config(config_path)
@@ -258,30 +406,43 @@ async def main(config_path: str = "config.yaml"):
         job_type="comparison",
     )
     
+    # Determine which models to evaluate
+    should_eval_openai = eval_all or "openai" in models_to_eval
+    should_eval_base = eval_all or "base" in models_to_eval
+    should_eval_ruler = eval_all or "ruler" in models_to_eval
+    should_eval_independent = eval_all or "independent" in models_to_eval
+    should_eval_combined = eval_all or "combined" in models_to_eval
+    
+    # Initialize backend for ART models
+    backend = ServerlessBackend()
+    
     # Comparison model (from config)
-    comparison_model = OpenAIModelWrapper(
-        model_name=config["comparison_model"],
-        correctness_judge_model=config["correctness_judge_model"],
-        tool_judge_model=config["tool_judge_model"]
-    )
+    comparison_model = None
+    if should_eval_openai:
+        print("\n🔄 Loading OpenAI comparison model...")
+        comparison_model = OpenAIModelWrapper(
+            model_name=config["comparison_model"],
+            correctness_judge_model=config["correctness_judge_model"],
+            tool_judge_model=config["tool_judge_model"]
+        )
     
     # Model 3: OpenPipe/Qwen base model (untrained)
-    # Use TrainableModel instead of Model to work with ServerlessBackend
-    base_model = art.TrainableModel(
-        name="qwen-base-comparison",  # Use a unique name for comparison
-        project=config["project"],
-        base_model=config["base_model"],
-    )
-    
-    backend = ServerlessBackend()
-    await base_model.register(backend)
-    
-    qwen_base = ArtQwenModelWrapper(
-        model=base_model,
-        model_name=config["base_model"],
-        correctness_judge_model=config["correctness_judge_model"],
-        tool_judge_model=config["tool_judge_model"]
-    )
+    qwen_base = None
+    if should_eval_base:
+        print("\n🔄 Loading base model...")
+        # Use TrainableModel instead of Model to work with ServerlessBackend
+        base_model = art.TrainableModel(
+            name="qwen-base-comparison",  # Use a unique name for comparison
+            project=config["project"],
+            base_model=config["base_model"],
+        )
+        await base_model.register(backend)
+        qwen_base = ArtQwenBaseModelWrapper(
+            model=base_model,
+            model_name=config["base_model"],
+            correctness_judge_model=config["correctness_judge_model"],
+            tool_judge_model=config["tool_judge_model"]
+        )
     
     # Preprocessing function to convert dataset rows to model input format
     def preprocess_model_input(example: dict) -> dict:
@@ -308,175 +469,218 @@ async def main(config_path: str = "config.yaml"):
         preprocess_model_input=preprocess_model_input
     )
     
-    # Model 4: Try to load the trained model if it exists
-    trained_model_wrapper = None
-    trained_step = 0
-    try:
-        print("\n🔄 Checking for trained model...")
-        trained_model = art.TrainableModel(
-            name=config["model_name_ruler"],
-            project=config["project"],
-            base_model=config["base_model"],
-        )
-        await trained_model.register(backend)
-        trained_step = await trained_model.get_step()
-        
-        if trained_step > 0:
-            print(f"✓ Found trained model at step {trained_step}")
-            trained_model_wrapper = ArtQwenModelWrapper(
-                model=trained_model,
-                model_name=f"{config['base_model']} (trained @ step {trained_step})",
-                correctness_judge_model=config["correctness_judge_model"],
-                tool_judge_model=config["tool_judge_model"]
+    # Model 4: Try to load the RULER-trained model if it exists
+    trained_ruler_model_wrapper = None
+    trained_ruler_step = 0
+    if should_eval_ruler:
+        try:
+            print("\n🔄 Checking for RULER-trained model...")
+            trained_ruler_model = art.TrainableModel(
+                name=config["model_name_ruler"],
+                project=config["project"],
+                base_model=config["base_model"],
             )
-        else:
-            print("⚠️  Model exists but is at step 0 (not trained yet)")
-    except Exception as e:
-        print(f"ℹ️  No trained model found: {e}")
+            await trained_ruler_model.register(backend)
+            trained_ruler_step = await trained_ruler_model.get_step()
+            
+            if trained_ruler_step > 0:
+                print(f"✓ Found RULER-trained model at step {trained_ruler_step}")
+                trained_ruler_model_wrapper = ArtQwenRulerTrainedModelWrapper(
+                    model=trained_ruler_model,
+                    model_name=f"{config['base_model']} (RULER @ step {trained_ruler_step})",
+                    correctness_judge_model=config["correctness_judge_model"],
+                    tool_judge_model=config["tool_judge_model"]
+                )
+            else:
+                print("⚠️  RULER model exists but is at step 0 (not trained yet)")
+        except Exception as e:
+            print(f"ℹ️  No RULER-trained model found: {e}")
+    else:
+        print("\nℹ️  Skipping RULER-trained model evaluation")
     
     # Model 5: Try to load the independent trained model if it exists
     trained_independent_model_wrapper = None
     trained_independent_step = 0
-    try:
-        print("\n🔄 Checking for independent trained model...")
-        trained_independent_model = art.TrainableModel(
-            name=config["model_name_independent"],
-            project=config["project"],
-            base_model=config["base_model"],
-        )
-        await trained_independent_model.register(backend)
-        trained_independent_step = await trained_independent_model.get_step()
-        
-        if trained_independent_step > 0:
-            print(f"✓ Found independent trained model at step {trained_independent_step}")
-            trained_independent_model_wrapper = ArtQwenModelWrapper(
-                model=trained_independent_model,
-                model_name=f"{config['base_model']} (independent @ step {trained_independent_step})",
-                correctness_judge_model=config["correctness_judge_model"],
-                tool_judge_model=config["tool_judge_model"]
+    if should_eval_independent:
+        try:
+            print("\n🔄 Checking for independent-trained model...")
+            trained_independent_model = art.TrainableModel(
+                name=config["model_name_independent"],
+                project=config["project"],
+                base_model=config["base_model"],
             )
-        else:
-            print("⚠️  Independent model exists but is at step 0 (not trained yet)")
-    except Exception as e:
-        print(f"ℹ️  No independent trained model found: {e}")
+            await trained_independent_model.register(backend)
+            trained_independent_step = await trained_independent_model.get_step()
+            
+            if trained_independent_step > 0:
+                print(f"✓ Found independent-trained model at step {trained_independent_step}")
+                trained_independent_model_wrapper = ArtQwenIndependentTrainedModelWrapper(
+                    model=trained_independent_model,
+                    model_name=f"{config['base_model']} (Independent @ step {trained_independent_step})",
+                    correctness_judge_model=config["correctness_judge_model"],
+                    tool_judge_model=config["tool_judge_model"]
+                )
+            else:
+                print("⚠️  Independent model exists but is at step 0 (not trained yet)")
+        except Exception as e:
+            print(f"ℹ️  No independent-trained model found: {e}")
+    else:
+        print("\nℹ️  Skipping independent-trained model evaluation")
     
     # Model 6: Try to load the combined trained model if it exists
     trained_combined_model_wrapper = None
     trained_combined_step = 0
-    try:
-        print("\n🔄 Checking for combined trained model...")
-        trained_combined_model = art.TrainableModel(
-            name=config["model_name_combined"],
-            project=config["project"],
-            base_model=config["base_model"],
-        )
-        await trained_combined_model.register(backend)
-        trained_combined_step = await trained_combined_model.get_step()
-        
-        if trained_combined_step > 0:
-            print(f"✓ Found combined trained model at step {trained_combined_step}")
-            trained_combined_model_wrapper = ArtQwenModelWrapper(
-                model=trained_combined_model,
-                model_name=f"{config['base_model']} (combined @ step {trained_combined_step})",
-                correctness_judge_model=config["correctness_judge_model"],
-                tool_judge_model=config["tool_judge_model"]
+    if should_eval_combined:
+        try:
+            print("\n🔄 Checking for combined-trained model...")
+            trained_combined_model = art.TrainableModel(
+                name=config["model_name_combined"],
+                project=config["project"],
+                base_model=config["base_model"],
             )
-        else:
-            print("⚠️  Combined model exists but is at step 0 (not trained yet)")
-    except Exception as e:
-        print(f"ℹ️  No combined trained model found: {e}")
+            await trained_combined_model.register(backend)
+            trained_combined_step = await trained_combined_model.get_step()
+            
+            if trained_combined_step > 0:
+                print(f"✓ Found combined-trained model at step {trained_combined_step}")
+                trained_combined_model_wrapper = ArtQwenCombinedTrainedModelWrapper(
+                    model=trained_combined_model,
+                    model_name=f"{config['base_model']} (Combined @ step {trained_combined_step})",
+                    correctness_judge_model=config["correctness_judge_model"],
+                    tool_judge_model=config["tool_judge_model"]
+                )
+            else:
+                print("⚠️  Combined model exists but is at step 0 (not trained yet)")
+        except Exception as e:
+            print(f"ℹ️  No combined-trained model found: {e}")
+    else:
+        print("\nℹ️  Skipping combined-trained model evaluation")
     
-    # Models list
-    models = [comparison_model, qwen_base]
-    model_names = [comp_model_name, "qwen-base"]
-    display_names = [comp_model_name, "OpenPipe/Qwen3-14B-Instruct base"]
+    # Models list - only include models that were loaded
+    models = []
+    model_names = []
+    display_names = []
     
-    # Add trained model if it exists
-    if trained_model_wrapper:
-        models.append(trained_model_wrapper)
-        model_names.append("qwen-trained")
-        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (trained @ step {trained_step})")
+    # Add OpenAI comparison model if it was loaded
+    if comparison_model:
+        models.append(comparison_model)
+        model_names.append(comp_model_name)
+        display_names.append(comp_model_name)
     
-    # Add independent trained model if it exists
+    # Add base model if it was loaded
+    if qwen_base:
+        models.append(qwen_base)
+        model_names.append("qwen-base")
+        display_names.append("OpenPipe/Qwen3-14B-Instruct base")
+    
+    # Add RULER-trained model if it exists
+    if trained_ruler_model_wrapper:
+        models.append(trained_ruler_model_wrapper)
+        model_names.append("qwen-ruler-trained")
+        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (RULER @ step {trained_ruler_step})")
+    
+    # Add independent-trained model if it exists
     if trained_independent_model_wrapper:
         models.append(trained_independent_model_wrapper)
-        model_names.append("qwen-trained-independent")
-        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (independent @ step {trained_independent_step})")
+        model_names.append("qwen-independent-trained")
+        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (Independent @ step {trained_independent_step})")
     
-    # Add combined trained model if it exists
+    # Add combined-trained model if it exists
     if trained_combined_model_wrapper:
         models.append(trained_combined_model_wrapper)
-        model_names.append("qwen-trained-combined")
-        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (combined @ step {trained_combined_step})")
+        model_names.append("qwen-combined-trained")
+        display_names.append(f"OpenPipe/Qwen3-14B-Instruct (Combined @ step {trained_combined_step})")
     
     # Run evaluations - all models evaluated with the SAME evaluation object
     results = {}
     
-    for model, model_name, display_name in zip(models, model_names, display_names):
-        print(f"\n🔄 Evaluating {display_name}...")
+    if not models:
+        print("\n⚠️  No models to evaluate. Use --models to specify which models to evaluate.")
+    else:
+        for model, model_name, display_name in zip(models, model_names, display_names):
+            print(f"\n🔄 Evaluating {display_name}...")
+            
+            # Run evaluation - all using the shared evaluation
+            eval_result = await shared_evaluation.evaluate(
+                model,
+                __weave={"display_name": display_name}
+            )
+            results[model_name] = eval_result
         
-        # Run evaluation - all using the shared evaluation
-        eval_result = await shared_evaluation.evaluate(
-            model,
-            __weave={"display_name": display_name}
-        )
-        results[model_name] = eval_result
-    
-    print("\n✅ All evaluations complete!")
+        print("\n✅ All evaluations complete!")
     
     # Create Weave Leaderboard object
-    try:
-        # Create leaderboard using the single shared Evaluation object
-        # All models evaluated with this evaluation will appear as rows
-        leaderboard_spec = leaderboard.Leaderboard(
-            name="Email Agent Model Comparison",
-            description="""
+    if not results:
+        print("\n⏭️  Skipping leaderboard creation (no models were evaluated)")
+        leaderboard_ref = None
+    else:
+        try:
+            # Create leaderboard using the single shared Evaluation object
+            # All models evaluated with this evaluation will appear as rows
+            # Build dynamic description based on which models were found
+            model_descriptions = [
+                f"- **{comp_model_name}**: Comparison model (configurable OpenAI model)",
+                "- **OpenPipe/Qwen3-14B-Instruct Base**: Untrained base model"
+            ]
+            
+            if trained_ruler_model_wrapper:
+                model_descriptions.append(f"- **OpenPipe/Qwen3-14B-Instruct (RULER)**: Fine-tuned with RULER rewards (step {trained_ruler_step})")
+            
+            if trained_independent_model_wrapper:
+                model_descriptions.append(f"- **OpenPipe/Qwen3-14B-Instruct (Independent)**: Fine-tuned with independent rewards (step {trained_independent_step})")
+            
+            if trained_combined_model_wrapper:
+                model_descriptions.append(f"- **OpenPipe/Qwen3-14B-Instruct (Combined)**: Fine-tuned with RULER + independent rewards (step {trained_combined_step})")
+            
+            leaderboard_spec = leaderboard.Leaderboard(
+                name="Email Agent Model Comparison",
+                description=f"""
 This leaderboard compares the performance of different models on the email search agent task.
 
-### Models
-- **Comparison Model**: Configurable OpenAI model (from config, default: gpt-5)
-- **Qwen Base**: OpenPipe/Qwen3-14B-Instruct base model (before fine-tuning)
-- **Qwen Trained**: Fine-tuned model trained with RULER rewards (automatically included if trained model exists)
-- **Qwen Independent**: Fine-tuned model trained with independent rewards (automatically included if independent trained model exists)
-- **Qwen Combined**: Fine-tuned model trained with RULER + independent rewards combined (automatically included if combined trained model exists)
+### Models Being Compared
+{chr(10).join(model_descriptions)}
 
 ### Metrics
-1. **Correctness**: Whether the model's answer matches the expected answer
-2. **Tool Optimal Rate**: Percentage of tool calls that were optimal
-3. **Retrieved Correct Sources**: Percentage of scenarios where correct source emails were retrieved
+1. **Correctness** (correct.mean): Whether the model's answer matches the expected answer (0-1 scale)
+2. **Tool Optimal Rate** (tool_optimal_rate.mean): Percentage of tool calls that were optimal (0-1 scale)
+3. **Retrieved Correct Sources** (retrieved_correct_sources.mean): Percentage of scenarios where correct source emails were retrieved (0-1 scale)
+
+### Evaluation Dataset
+- **Dataset**: enron-validation-scenarios (100 examples)
+- **Judge Models**: {config['correctness_judge_model']} for correctness, {config['tool_judge_model']} for tool usage
 
 ### Note
-All models are evaluated using the same evaluation object, ensuring they appear as rows in this leaderboard.
-To update the leaderboard with a newly trained model, simply re-run this script.
+All models are evaluated using the same shared evaluation object to ensure fair comparison.
+Each trained model uses a unique wrapper class to display separately in the leaderboard.
 """,
-            columns=[
-                # Single set of columns for the shared evaluation
-                # All models appear as rows under these columns
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(shared_evaluation).uri(),
-                    scorer_name="score_correctness",
-                    summary_metric_path="correct.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(shared_evaluation).uri(),
-                    scorer_name="score_tool_usage",
-                    summary_metric_path="tool_optimal_rate.mean",
-                ),
-                leaderboard.LeaderboardColumn(
-                    evaluation_object_ref=get_ref(shared_evaluation).uri(),
-                    scorer_name="score_source_retrieval",
-                    summary_metric_path="retrieved_correct_sources.mean",
-                ),
-            ],
-        )
-        
-        leaderboard_ref = weave.publish(leaderboard_spec)
-        print(f"\n📊 Leaderboard published: {leaderboard_ref}")
-    except Exception as e:
-        print(f"\n❌ Failed to create leaderboard: {e}")
-        import traceback
-        traceback.print_exc()
-        leaderboard_ref = None
+                columns=[
+                    # Single set of columns for the shared evaluation
+                    # All models appear as rows under these columns
+                    leaderboard.LeaderboardColumn(
+                        evaluation_object_ref=get_ref(shared_evaluation).uri(),
+                        scorer_name="score_correctness",
+                        summary_metric_path="correct.mean",
+                    ),
+                    leaderboard.LeaderboardColumn(
+                        evaluation_object_ref=get_ref(shared_evaluation).uri(),
+                        scorer_name="score_tool_usage",
+                        summary_metric_path="tool_optimal_rate.mean",
+                    ),
+                    leaderboard.LeaderboardColumn(
+                        evaluation_object_ref=get_ref(shared_evaluation).uri(),
+                        scorer_name="score_source_retrieval",
+                        summary_metric_path="retrieved_correct_sources.mean",
+                    ),
+                ],
+            )
+            
+            leaderboard_ref = weave.publish(leaderboard_spec)
+            print(f"\n📊 Leaderboard published: {leaderboard_ref}")
+        except Exception as e:
+            print(f"\n❌ Failed to create leaderboard: {e}")
+            import traceback
+            traceback.print_exc()
+            leaderboard_ref = None
     
     # Finish W&B run
     run.finish()
@@ -492,7 +696,18 @@ if __name__ == "__main__":
         default="config.yaml",
         help="Path to the YAML configuration file (default: config.yaml)"
     )
+    parser.add_argument(
+        "--models",
+        type=str,
+        nargs="+",
+        choices=["openai", "base", "ruler", "independent", "combined", "all"],
+        default=["all"],
+        help="Which models to evaluate. Options: openai, base, ruler, independent, combined, all (default: all)"
+    )
     args = parser.parse_args()
     
-    asyncio.run(main(config_path=args.config))
+    asyncio.run(main(
+        config_path=args.config,
+        models_to_eval=args.models
+    ))
 

@@ -4,8 +4,8 @@
 # Model configuration
 project: "email-agent-openpipe-weave-models-demo"
 model_name_ruler: "qwen-art-trainable-model-email-agent-v4"  # For RULER training
-model_name_independent: "qwen-art-trainable-model-email-agent-independent"  # For independent reward training
-model_name_combined: "qwen-art-trainable-model-email-agent-combined"  # For combined RULER + independent rewards
+model_name_independent: "qwen-art-trainable-model-email-agent-independent-v2"  # For independent reward training
+model_name_combined: "qwen-art-trainable-model-email-agent-combined-v2"  # For combined RULER + independent rewards
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
