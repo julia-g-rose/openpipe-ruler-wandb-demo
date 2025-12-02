@@ -231,8 +231,11 @@ async def main(config_path: str = "config.yaml"):
                 traj.metrics["independent_reward"] = independent_reward
                 
                 # Combine RULER and independent rewards
-                # Both are roughly in [0, 1] range, so we can add them
-                traj.reward = ruler_score + independent_reward
+                # Both are roughly in [0, 1] range, so we normalize the sum to [0, 1]
+                # by dividing by 2 to ensure fair comparison with other models
+                combined_reward = ruler_score + independent_reward
+                traj.reward = combined_reward / 2  # Normalize to [0, 1]
+                traj.metrics["combined_reward_unnormalized"] = combined_reward  # Store unnormalized for reference
 
         # Train the model on the trajectories with combined rewards and timeout handling
         max_retries = 3
@@ -372,7 +375,10 @@ async def main(config_path: str = "config.yaml"):
                     traj.metrics["independent_reward"] = independent_reward
                     
                     # Combine RULER and independent rewards
-                    traj.reward = ruler_score + independent_reward
+                    # Normalize to [0, 1] by dividing by 2 for fair comparison
+                    combined_reward = ruler_score + independent_reward
+                    traj.reward = combined_reward / 2  # Normalize to [0, 1]
+                    traj.metrics["combined_reward_unnormalized"] = combined_reward  # Store unnormalized for reference
 
             await model.log(
                 judged_validation_groups,
