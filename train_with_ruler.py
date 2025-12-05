@@ -1,12 +1,15 @@
 """
-Training script for the email search agent with combined RULER and independent rewards.
+Training script for the email search agent.
 
-This script combines both RULER (relative LLM-based scoring) and independent rewards
-(hand-crafted metrics like correctness, retrieved sources, and tool optimality).
+This script initializes the model, sets up the training configuration,
+and runs the training loop with validation at regular intervals.
 
 Usage:
-    python train_with_ruler_and_scorers.py                           # Uses default config.yaml
-    python train_with_ruler_and_scorers.py --config custom.yaml      # Uses custom config file
+    python train_ruler.py                                    # Uses default config.yaml
+    python train_ruler.py --config custom.yaml               # Uses custom config file
+    python train_ruler.py --resume-auto                      # Auto-resume from same directory
+    python train_ruler.py --resume-id <run_id>               # Resume specific run by ID
+    python train_ruler.py --config custom.yaml --resume-auto # Combine options
 """
 import argparse
 import asyncio
@@ -41,38 +44,6 @@ ruler_score_group = weave.op(ruler_score_group)
 load_dotenv()
 
 
-def calculate_independent_reward(trajectory) -> float:
-    """
-    Calculate independent reward from trajectory metrics.
-    
-    This combines multiple signals:
-    - Correctness: Whether the answer is correct (binary 0/1)
-    - Retrieved sources: Whether correct sources were retrieved (binary 0/1)
-    - Tool optimality: How well tools were used (continuous 0-1)
-    
-    Args:
-        trajectory: A trajectory with metrics
-        
-    Returns:
-        Combined independent reward score
-    """
-    correct = trajectory.metrics.get("correct", 0.0)
-    retrieved_correct_sources = trajectory.metrics.get("retrieved_correct_sources", 0.0)
-    tool_optimal_rate = trajectory.metrics.get("tool_optimal_rate", 0.0)
-    
-    # Combine metrics with weights
-    # Correctness is most important (weight: 0.5)
-    # Retrieved sources is also important (weight: 0.3)
-    # Tool optimality is a bonus (weight: 0.2)
-    independent_reward = (
-        0.5 * correct +
-        0.3 * retrieved_correct_sources +
-        0.2 * tool_optimal_rate
-    )
-    
-    return independent_reward
-
-
 async def main(config_path: str = "config.yaml"):
     """Main training loop.
     
@@ -93,17 +64,35 @@ async def main(config_path: str = "config.yaml"):
     
     # Initialize W&B run with config
     lr_str = f"{training_config['learning_rate']:.0e}".replace('-0', '-')  # Format like 1e-5
-    run_name = f"train-combined-d{training_config['training_dataset_size']}-v{training_config['validation_dataset_size']}-g{training_config['groups_per_step']}-r{training_config['rollouts_per_group']}-lr{lr_str}-{datetime.now().strftime('%Y%m%d-%H%M')}"
-    run = wandb.init(
-        project=training_config["project"],
-        name=run_name,
-        config=training_config,
-        job_type=training_config.get("wandb_job_type", "train"),
-    )
+    run_name = f"train-d{training_config['training_dataset_size']}-v{training_config['validation_dataset_size']}-g{training_config['groups_per_step']}-r{training_config['rollouts_per_group']}-lr{lr_str}-{datetime.now().strftime('%Y%m%d-%H%M')}"
     
-    # Declare the model
+    # Handle resume logic
+    resume_id = training_config.get("resume_id")
+    resume_auto = training_config.get("resume_auto", False)
+    
+    wandb_init_kwargs = {
+        "project": training_config["project"],
+        "name": run_name,
+        "config": training_config,
+        "job_type": training_config.get("wandb_job_type", "train"),
+    }
+    
+    if resume_id:
+        # Resume a specific run by ID
+        wandb_init_kwargs["id"] = resume_id
+        wandb_init_kwargs["resume"] = "must"
+        print(f"🔄 Resuming run with ID: {resume_id}")
+    elif resume_auto:
+        # Auto-resume from same directory if possible
+        wandb_init_kwargs["resume"] = "auto"
+        print("🔄 Auto-resume enabled (will resume if run exists in this directory)")
+    
+    run = wandb.init(**wandb_init_kwargs)
+    
+    # Declare the model with dynamically constructed name
+    model_name = f"{run.config.model_name_ruler}-lr{lr_str}"
     model = art.TrainableModel(
-        name=run.config.model_name_combined,
+        name=model_name,
         project=run.config.project,
         base_model=run.config.base_model,
     )
@@ -176,6 +165,7 @@ async def main(config_path: str = "config.yaml"):
     # Main training loop
     for batch in training_iterator:
         # Create trajectory groups for this batch
+        # Note: We pass coroutines to TrajectoryGroup, not awaited results
         train_groups = []
         for scenario in batch.items:
             train_groups.append(
@@ -198,7 +188,7 @@ async def main(config_path: str = "config.yaml"):
             max_exceptions=run.config.rollouts_per_group * len(batch.items),
         )
 
-        # Step 1: Use RULER to assign relative scores with timeout handling
+        # Use RULER to assign relative scores to each trajectory with timeout handling
         judged_groups = []
         for i, group in enumerate(finished_train_groups):
             max_retries = 3
@@ -219,25 +209,7 @@ async def main(config_path: str = "config.yaml"):
                         # Skip this group if all retries fail
                         continue
 
-        # Step 2: Add independent rewards on top of RULER scores
-        for group in judged_groups:
-            for traj in group.trajectories:
-                # Calculate independent reward from metrics
-                independent_reward = calculate_independent_reward(traj)
-                
-                # Store RULER score separately before combining
-                ruler_score = traj.reward
-                traj.metrics["ruler_score"] = ruler_score
-                traj.metrics["independent_reward"] = independent_reward
-                
-                # Combine RULER and independent rewards
-                # Both are roughly in [0, 1] range, so we normalize the sum to [0, 1]
-                # by dividing by 2 to ensure fair comparison with other models
-                combined_reward = ruler_score + independent_reward
-                traj.reward = combined_reward / 2  # Normalize to [0, 1]
-                traj.metrics["combined_reward_unnormalized"] = combined_reward  # Store unnormalized for reference
-
-        # Train the model on the trajectories with combined rewards and timeout handling
+        # Train the model on the judged trajectories with timeout handling
         max_retries = 3
         train_success = False
         for attempt in range(max_retries):
@@ -269,14 +241,10 @@ async def main(config_path: str = "config.yaml"):
         all_finished_train_trajectories = [t for g in finished_train_groups for t in g.trajectories]
         
         if all_train_trajectories:
-            # Calculate reward statistics (combined reward)
+            # Calculate reward statistics
             train_rewards = [t.reward for t in all_train_trajectories]
             avg_train_reward = sum(train_rewards) / len(train_rewards)
             reward_std_dev = (sum((r - avg_train_reward) ** 2 for r in train_rewards) / len(train_rewards)) ** 0.5
-            
-            # Track RULER and independent components separately
-            avg_train_ruler = sum(t.metrics.get("ruler_score", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
-            avg_train_independent = sum(t.metrics.get("independent_reward", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             
             avg_train_correct = sum(t.metrics.get("correct", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
             avg_train_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_train_trajectories) / len(all_train_trajectories)
@@ -290,9 +258,8 @@ async def main(config_path: str = "config.yaml"):
             
             # Extract training step metrics (loss, grad_norm, entropy) if available
             train_metrics = {
-                "train/reward": avg_train_reward,  # Combined reward
-                "train/ruler_score": avg_train_ruler,  # RULER component
-                "train/independent_reward": avg_train_independent,  # Independent component
+                "train/reward": avg_train_reward,
+                "train/ruler_score": avg_train_reward,
                 "train/correct": avg_train_correct,
                 "train/retrieved_correct_sources": avg_train_retrieved_correct_sources,
                 "train/tool_optimal_rate": avg_train_tool_optimal_rate,
@@ -342,7 +309,7 @@ async def main(config_path: str = "config.yaml"):
                 max_exceptions=run.config.rollouts_per_group * len(validation_scenarios),
             )
             
-            # Apply RULER scoring to validation groups with timeout handling
+            # Apply RULER scoring to validation groups to get rewards with timeout handling
             judged_validation_groups = []
             for i, group in enumerate(finished_validation_groups):
                 max_retries = 3
@@ -363,23 +330,6 @@ async def main(config_path: str = "config.yaml"):
                             # Skip this validation scenario if all retries fail
                             continue
 
-            # Add independent rewards on top of RULER scores for validation
-            for group in judged_validation_groups:
-                for traj in group.trajectories:
-                    # Calculate independent reward from metrics
-                    independent_reward = calculate_independent_reward(traj)
-                    
-                    # Store RULER score separately before combining
-                    ruler_score = traj.reward
-                    traj.metrics["ruler_score"] = ruler_score
-                    traj.metrics["independent_reward"] = independent_reward
-                    
-                    # Combine RULER and independent rewards
-                    # Normalize to [0, 1] by dividing by 2 for fair comparison
-                    combined_reward = ruler_score + independent_reward
-                    traj.reward = combined_reward / 2  # Normalize to [0, 1]
-                    traj.metrics["combined_reward_unnormalized"] = combined_reward  # Store unnormalized for reference
-
             await model.log(
                 judged_validation_groups,
                 split="val"
@@ -392,8 +342,6 @@ async def main(config_path: str = "config.yaml"):
             
             if all_val_trajectories:
                 avg_val_reward = sum(t.reward for t in all_val_trajectories) / len(all_val_trajectories)
-                avg_val_ruler = sum(t.metrics.get("ruler_score", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
-                avg_val_independent = sum(t.metrics.get("independent_reward", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_correct = sum(t.metrics.get("correct", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_retrieved_correct_sources = sum(t.metrics.get("retrieved_correct_sources", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
                 avg_val_tool_optimal_rate = sum(t.metrics.get("tool_optimal_rate", 0.0) for t in all_val_trajectories) / len(all_val_trajectories)
@@ -406,9 +354,8 @@ async def main(config_path: str = "config.yaml"):
                 
                 # Log all validation metrics together in the same step
                 wandb.log({
-                    "val/reward": avg_val_reward,  # Combined reward
-                    "val/ruler_score": avg_val_ruler,  # RULER component
-                    "val/independent_reward": avg_val_independent,  # Independent component
+                    "val/reward": avg_val_reward,
+                    "val/ruler_score": avg_val_reward,  # Add explicit RULER score logging
                     "val/correct": avg_val_correct,
                     "val/retrieved_correct_sources": avg_val_retrieved_correct_sources,
                     "val/tool_optimal_rate": avg_val_tool_optimal_rate,
@@ -419,9 +366,7 @@ async def main(config_path: str = "config.yaml"):
                 # Build data table with individual trajectory metrics
                 scatter_data = []
                 for judged_traj, finished_traj in zip(all_val_trajectories, all_finished_val_trajectories):
-                    combined_reward = judged_traj.reward
-                    ruler_score = judged_traj.metrics.get("ruler_score", 0.0)
-                    independent_reward = judged_traj.metrics.get("independent_reward", 0.0)
+                    ruler_score = judged_traj.reward
                     correct = judged_traj.metrics.get("correct", 0.0)
                     retrieved_sources = judged_traj.metrics.get("retrieved_correct_sources", 0.0)
                     tool_optimal = judged_traj.metrics.get("tool_optimal_rate", 0.0)
@@ -429,10 +374,10 @@ async def main(config_path: str = "config.yaml"):
                     completion_tokens = finished_traj.metadata.get("completion_tokens", 0) if hasattr(finished_traj, 'metadata') else 0
                     
                     scatter_data.append([
-                        combined_reward, ruler_score, independent_reward, correct, retrieved_sources, tool_optimal, completion_tokens
+                        ruler_score, correct, retrieved_sources, tool_optimal, completion_tokens
                     ])
                 
-                scatter_columns = ["combined_reward", "ruler_score", "independent_reward", "correct", "retrieved_correct_sources", "tool_optimal_rate", "completion_tokens"]
+                scatter_columns = ["ruler_score", "correct", "retrieved_correct_sources", "tool_optimal_rate", "completion_tokens"]
                 
                 # Correctness Correlations panel - Bar charts comparing correct vs incorrect
                 # Only log if enabled in config
@@ -464,20 +409,6 @@ async def main(config_path: str = "config.yaml"):
                             "Average RULER Score",
                             "RULER Score: Correct vs Incorrect"
                         ),
-                        "correctness_correlations/correct_vs_independent_reward": create_correctness_bar_chart(
-                            scatter_data,
-                            scatter_columns,
-                            "independent_reward",
-                            "Average Independent Reward",
-                            "Independent Reward: Correct vs Incorrect"
-                        ),
-                        "correctness_correlations/correct_vs_combined_reward": create_correctness_bar_chart(
-                            scatter_data,
-                            scatter_columns,
-                            "combined_reward",
-                            "Average Combined Reward",
-                            "Combined Reward: Correct vs Incorrect"
-                        ),
                     }, step=batch.step)
             
             # Create a new validation table for this step with consistent column names
@@ -495,9 +426,7 @@ async def main(config_path: str = "config.yaml"):
                     "model_source_ids",
                     "judge_correct",
                     "judge_reasoning",
-                    "combined_reward",
                     "ruler_reward",
-                    "independent_reward",
                     "retrieved_correct_sources",
                     "tool_optimal_rate",
                     "tool_reasoning",
@@ -507,7 +436,7 @@ async def main(config_path: str = "config.yaml"):
             for scenario, group, finished_group in zip(validation_scenarios, judged_validation_groups, finished_validation_groups):
                 # Get the first (and only) trajectory from the group
                 if len(group.trajectories) > 0:
-                    traj = group.trajectories[0]  # For rewards and metrics
+                    traj = group.trajectories[0]  # For RULER rewards and metrics
                     finished_traj = finished_group.trajectories[0]  # For original trajectory data
                     
                     # Extract metrics for this step - use finished_traj for final_answer
@@ -527,9 +456,7 @@ async def main(config_path: str = "config.yaml"):
                     
                     judge_correct = traj.metrics.get("correct", 0.0)
                     judge_reasoning = traj.metadata.get("judge_reasoning", "")
-                    combined_reward = traj.reward
-                    ruler_reward = traj.metrics.get("ruler_score", 0.0)
-                    independent_reward = traj.metrics.get("independent_reward", 0.0)
+                    ruler_reward = traj.reward
                     retrieved_correct_sources = traj.metrics.get("retrieved_correct_sources", 0.0)
                     tool_optimal_rate = traj.metrics.get("tool_optimal_rate", 0.0)
                 else:
@@ -539,9 +466,7 @@ async def main(config_path: str = "config.yaml"):
                     tool_reasoning = ""
                     judge_correct = 0.0
                     judge_reasoning = ""
-                    combined_reward = 0.0
                     ruler_reward = 0.0
-                    independent_reward = 0.0
                     retrieved_correct_sources = 0.0
                     tool_optimal_rate = 0.0
                 
@@ -558,9 +483,7 @@ async def main(config_path: str = "config.yaml"):
                     source_ids,
                     judge_correct,
                     judge_reasoning,
-                    combined_reward,
                     ruler_reward,
-                    independent_reward,
                     retrieved_correct_sources,
                     tool_optimal_rate,
                     tool_reasoning,
@@ -606,7 +529,7 @@ if __name__ == "__main__":
     import asyncio
     
     parser = argparse.ArgumentParser(
-        description="Train the email search agent with combined RULER and independent rewards."
+        description="Train the email search agent with specified configuration."
     )
     parser.add_argument(
         "--config",
@@ -614,7 +537,37 @@ if __name__ == "__main__":
         default="config.yaml",
         help="Path to the YAML configuration file (default: config.yaml)"
     )
+    parser.add_argument(
+        "--resume-id",
+        type=str,
+        default=None,
+        help="Resume training from a specific W&B run ID (uses resume='must')"
+    )
+    parser.add_argument(
+        "--resume-auto",
+        action="store_true",
+        help="Auto-resume from the same directory if a run exists (uses resume='auto')"
+    )
     args = parser.parse_args()
     
-    asyncio.run(main(config_path=args.config))
+    # Load config and add resume options from command-line args
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    if args.resume_id:
+        config['resume_id'] = args.resume_id
+    if args.resume_auto:
+        config['resume_auto'] = True
+    
+    # Save the modified config temporarily for the main function
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
+        yaml.dump(config, tmp)
+        tmp_config_path = tmp.name
+    
+    try:
+        asyncio.run(main(config_path=tmp_config_path))
+    finally:
+        # Clean up temporary config file
+        Path(tmp_config_path).unlink(missing_ok=True)
 

@@ -1,14 +1,18 @@
 """
-Training script for the email search agent.
+Training script for the email search agent with independent rewards.
 
 This script initializes the model, sets up the training configuration,
 and runs the training loop with validation at regular intervals.
 
 Usage:
-    python train.py                           # Uses default config.yaml
-    python train.py --config custom.yaml      # Uses custom config file
+    python train_independent_reward.py                                    # Uses default config.yaml
+    python train_independent_reward.py --config custom.yaml               # Uses custom config file
+    python train_independent_reward.py --resume-auto                      # Auto-resume from same directory
+    python train_independent_reward.py --resume-id <run_id>               # Resume specific run by ID
+    python train_independent_reward.py --config custom.yaml --resume-auto # Combine options
 """
 import argparse
+import asyncio
 import json
 import random
 import yaml
@@ -88,16 +92,34 @@ async def main(config_path: str = "config.yaml"):
     # Initialize W&B run with config
     lr_str = f"{training_config['learning_rate']:.0e}".replace('-0', '-')  # Format like 1e-5
     run_name = f"train-independent-d{training_config['training_dataset_size']}-v{training_config['validation_dataset_size']}-g{training_config['groups_per_step']}-r{training_config['rollouts_per_group']}-lr{lr_str}-{datetime.now().strftime('%Y%m%d-%H%M')}"
-    run = wandb.init(
-        project=training_config["project"],
-        name=run_name,
-        config=training_config,
-        job_type=training_config.get("wandb_job_type", "train"),
-    )
     
-    # Declare the model
+    # Handle resume logic
+    resume_id = training_config.get("resume_id")
+    resume_auto = training_config.get("resume_auto", False)
+    
+    wandb_init_kwargs = {
+        "project": training_config["project"],
+        "name": run_name,
+        "config": training_config,
+        "job_type": training_config.get("wandb_job_type", "train"),
+    }
+    
+    if resume_id:
+        # Resume a specific run by ID
+        wandb_init_kwargs["id"] = resume_id
+        wandb_init_kwargs["resume"] = "must"
+        print(f"🔄 Resuming run with ID: {resume_id}")
+    elif resume_auto:
+        # Auto-resume from same directory if possible
+        wandb_init_kwargs["resume"] = "auto"
+        print("🔄 Auto-resume enabled (will resume if run exists in this directory)")
+    
+    run = wandb.init(**wandb_init_kwargs)
+    
+    # Declare the model with dynamically constructed name
+    model_name = f"{run.config.model_name_independent}-lr{lr_str}"
     model = art.TrainableModel(
-        name=run.config.model_name_independent,
+        name=model_name,
         project=run.config.project,
         base_model=run.config.base_model,
     )
@@ -516,7 +538,37 @@ if __name__ == "__main__":
         default="config.yaml",
         help="Path to the YAML configuration file (default: config.yaml)"
     )
+    parser.add_argument(
+        "--resume-id",
+        type=str,
+        default=None,
+        help="Resume training from a specific W&B run ID (uses resume='must')"
+    )
+    parser.add_argument(
+        "--resume-auto",
+        action="store_true",
+        help="Auto-resume from the same directory if a run exists (uses resume='auto')"
+    )
     args = parser.parse_args()
     
-    asyncio.run(main(config_path=args.config))
+    # Load config and add resume options from command-line args
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    if args.resume_id:
+        config['resume_id'] = args.resume_id
+    if args.resume_auto:
+        config['resume_auto'] = True
+    
+    # Save the modified config temporarily for the main function
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
+        yaml.dump(config, tmp)
+        tmp_config_path = tmp.name
+    
+    try:
+        asyncio.run(main(config_path=tmp_config_path))
+    finally:
+        # Clean up temporary config file
+        Path(tmp_config_path).unlink(missing_ok=True)
 

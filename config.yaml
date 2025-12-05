@@ -3,9 +3,9 @@
 
 # Model configuration
 project: "demo-project-qwen-email-agent-with-art-weave-models"
-model_name_ruler: "qwen-trained-with-ruler"  # For RULER training
-model_name_independent: "qwen-trained-with-independent-scorer-rewards"  # For independent reward training
-model_name_combined: "qwen-trained-with-ruler-and-scorer-rewards-v2"  # For combined RULER + independent rewards
+model_name_ruler: "qwen-trained-with-ruler"  # Base name for RULER training (LR will be appended)
+model_name_independent: "qwen-trained-with-independent-scorer-rewards"  # Base name for independent reward training (LR will be appended)
+model_name_combined: "qwen-trained-with-ruler-and-weave-scorers"  # Base name for combined RULER + independent rewards (LR will be appended)
 base_model: "OpenPipe/Qwen3-14B-Instruct"
 
 # Dataset configuration
@@ -23,13 +23,13 @@ correctness_judge_model: "openai/gpt-5"  # Used for evaluating answer correctnes
 tool_judge_model: "openai/gpt-5"  # Used for evaluating tool call appropriateness
 
 # Comparison models (for compare_models.py)
-comparison_model: "gpt-5"  # Second model for leaderboard comparison
+comparison_model: "gpt-4o"  # Second model for leaderboard comparison
 
 # Training hyperparameters
 groups_per_step: 4  # Increased from 2 for more scenarios per update
 num_epochs: 1 
 rollouts_per_group: 4  # Balanced for RULER signal vs API reliability
-learning_rate: 5.0e-6  # Decreased from 1.0e-5 for more stable updates
+learning_rate: 1.0e-5  # Increased from 5.0e-6 to match higher reward magnitude training dynamics
 
 # Validation and evaluation
 validation_step_interval: 25  # Decreased from 25 for more frequent validation

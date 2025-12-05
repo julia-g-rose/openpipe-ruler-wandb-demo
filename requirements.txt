@@ -7,3 +7,7 @@ weave
 pydantic
 tqdm
 pyyaml
+requests
+litellm
+python-dotenv
+python-dateutil
