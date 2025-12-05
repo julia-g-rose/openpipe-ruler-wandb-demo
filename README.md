@@ -1,292 +1,389 @@
 # Email Search Agent - OpenPipe ART Demo
 
-This project demonstrates training an email search agent using [OpenPipe's ART (Automated Reinforcement Learning Trainer)](https://docs.openpipe.ai/features/art) framework with the [RULER](https://docs.openpipe.ai/features/art/reward-functions/ruler) reward function and the Enron email dataset. 
+This project demonstrates training an LLM-powered email search agent using [OpenPipe's ART (Automated Reinforcement Learning Trainer)](https://docs.openpipe.ai/features/art) framework with different reward strategies.
 
-The project integrates with [W&B Models](https://docs.wandb.ai/guides/models) for experiment tracking and model management, and [W&B Weave](https://wandb.me/weave) for LLM observability, evaluation, and leaderboards.
+## Overview
 
-## Usage
+The agent searches through the Enron email dataset to answer user queries by:
+1. Using tools to search and retrieve relevant emails
+2. Analyzing email content to find answers
+3. Citing source emails to support answers
+
+This demo showcases three different training approaches:
+- **RULER**: LLM-based comparative scoring
+- **Weave Scorers**: Hand-crafted independent reward metrics
+- **Combined**: Both RULER and Weave Scorers together
+
+The project integrates:
+- **[OpenPipe ART](https://docs.openpipe.ai/features/art)** - RL training framework
+- **[W&B Models](https://docs.wandb.ai/guides/models)** - Experiment tracking and model management
+- **[W&B Weave](https://wandb.me/weave)** - LLM observability, evaluation, and leaderboards
+
+## Quick Start
+
+### Prerequisites
+
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+2. Set up environment variables by creating a `.env` file in the project root:
+```bash
+# Create .env file
+cat > .env << EOF
+WANDB_API_KEY=your_wandb_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
+EOF
+```
+
+Get your API keys from:
+- W&B: https://wandb.ai/authorize
+- OpenAI: https://platform.openai.com/api-keys
 
 ### Workflow Overview
 
-1. **First Time Setup**: Run `upload_dataset_to_wandb.py` to prepare datasets (required before training)
-2. **Training**: Run `train_ruler.py` or `train_independent_reward.py` to train models
-3. **Benchmarking**: Run `create_leaderboard.py` at any time to:
-   - Before training: Benchmark the untrained base model against OpenAI models
-   - After training: Compare trained models against the base model and OpenAI models
+1. **Setup**: Run `upload_dataset_to_wandb.py` to prepare datasets (required before training)
+2. **Training**: Choose one of three training approaches (see below)
+3. **Evaluation**: Run `create_leaderboard.py` to benchmark and compare models
 
-### Step 1: Prepare Dataset (Required First)
+### Step 1: Prepare Dataset
 
-**Important**: This must be run before training scripts will work.
+**Required before training:**
 
 ```bash
 python upload_dataset_to_wandb.py
 ```
 
-This script creates everything in a single W&B run:
-- ✅ **W&B Artifacts** - Used by training scripts (required for training)
+This creates:
+- ✅ **W&B Artifacts** - Used by training scripts (required)
 - ✅ **Weave Datasets** - Published to Weave for LLM observability
 - ✅ **W&B Tables** - Visualize scenarios in the W&B UI
 - ✅ **Summary Statistics** - Dataset counts and metadata
 
-The number of scenarios loaded is controlled by `training_dataset_size` and `validation_dataset_size` in `config.yaml`.
+Dataset size is controlled by `training_dataset_size` and `validation_dataset_size` in `config.yaml`.
 
-**Note**: If you change the dataset configuration (size or seed), re-run this script to create new versions with the updated data.
+**Note**: Re-run this script if you change dataset configuration (size or seed).
 
 ### Step 2: Training
 
-Train using the RULER algorithm:
+Choose one of three training approaches:
+
+#### Option A: RULER Only (LLM-Based Comparative Scoring)
+
+Uses RULER algorithm with LLM judge to compare trajectories:
 
 ```bash
-# Use default config.yaml
-python train_ruler.py
+python train_with_ruler.py
 
-# Or specify a custom config file
-python train_ruler.py --config my_custom_config.yaml
+# Or with custom config
+python train_with_ruler.py --config my_config.yaml
+
+# Resume training
+python train_with_ruler.py --resume-auto
 ```
 
-Or train using independent reward scoring:
+#### Option B: Weave Scorers Only (Independent Reward Metrics)
+
+Uses hand-crafted metrics (correctness, source retrieval, tool usage) as independent rewards:
 
 ```bash
-python train_independent_reward.py
+python train_with_weave_scorers.py
+
+# Or with custom config
+python train_with_weave_scorers.py --config my_config.yaml
 ```
 
-This will:
-1. Load configuration from the YAML file
-2. Download and load dataset artifacts from W&B
+#### Option C: Combined Approach (RULER + Weave Scorers)
+
+Combines both RULER comparative scoring and independent reward metrics:
+
+```bash
+python train_with_ruler_and_weave_scorers.py
+
+# Or with custom config
+python train_with_ruler_and_weave_scorers.py --config my_config.yaml
+```
+
+All training scripts will:
+1. Load configuration from YAML
+2. Download dataset artifacts from W&B
 3. Initialize the email agent model
-4. Register with the serverless backend
-5. Run training for all configured epochs
-6. Save checkpoint metadata as W&B model artifacts after each step
-7. Log training metrics and validation results to W&B
+4. Run training for configured epochs
+5. Save checkpoints as W&B model artifacts
+6. Log metrics and validation results to W&B
 
-**Note**: Training runs until all epochs complete based on the dataset size and `num_epochs` configuration. All checkpoints are preserved and logged to W&B.
+**Note**: Training runs until all epochs complete. All checkpoints are preserved.
 
-### Step 3: Model Comparison with Weave Leaderboards (Flexible Timing)
+### Step 3: Evaluation and Leaderboards
 
-**This can be run at any time** - before or after training:
-
-- **Before training**: Benchmark the untrained base model (OpenPipe/Qwen) against OpenAI models
-- **After training**: Compare trained models against the base model and OpenAI models
-
-The script automatically detects which models are available and includes them in the comparison.
+Run at any time to benchmark models:
 
 ```bash
-# Use default config.yaml
 python create_leaderboard.py
 
-# Or specify a custom config file
-python create_leaderboard.py --config my_custom_config.yaml
+# Or with custom config
+python create_leaderboard.py --config my_config.yaml
 ```
 
 This will:
-1. Load the validation dataset from W&B
-2. Set up models for comparison (includes trained models if they exist)
-3. Run all Weave scorers on each model:
-   - **CorrectnessJudgeScorer** - LLM judge for answer correctness
-   - **SourceRetrievalScorer** - Precision/recall for source emails
-   - **ToolUsageScorer** - LLM judge for tool call appropriateness
-4. Create a Weave leaderboard with all metrics
-5. Log results to W&B for parallel coordinates visualization
+1. Load the validation dataset
+2. Evaluate all available models (base + trained)
+3. Run Weave scorers:
+   - **CorrectnessJudgeScorer** - LLM-based answer correctness
+   - **SourceRetrievalScorer** - Source email retrieval quality
+   - **ToolUsageScorer** - Tool call appropriateness
+4. Create a Weave leaderboard
+5. Log results to W&B
 
-**Models included in comparison:**
-- Comparison model (configurable in `config.yaml` as `comparison_model`)
+**Available Models:**
+- Comparison model (e.g., GPT-4o, configured in `config.yaml`)
 - OpenPipe/Qwen base model (untrained)
-- Trained RULER model (if exists - from `train_ruler.py`)
-- Trained Independent model (if exists - from `train_independent_reward.py`)
+- Trained models (automatically detected if they exist)
 
 **Viewing Results:**
 
-1. **Weave Leaderboard**: Visit `https://wandb.ai/[entity]/[project]/weave/leaderboards`
-2. **Parallel Coordinates**: 
-   - Go to your W&B run page
-   - Click "Add Panel" → "Parallel Coordinates"
-   - Select metrics to compare across models
-   - Color by model name to see patterns
+1. **Weave Leaderboard**: `https://wandb.ai/[your-entity]/email-search-agent-art-demo/weave/leaderboards`
+2. **W&B Dashboard**: View training metrics, validation results, and comparisons
+3. **Parallel Coordinates**: Add panel in W&B to compare metrics across models
 
-**Key Metrics Tracked:**
+Replace `[your-entity]` with your W&B username or team name.
+
+**Key Metrics:**
 - `correct` - Answer correctness (0.0-1.0)
-- `retrieved_correct_sources` - Whether all expected sources were retrieved
-- `tool_optimal_rate` - % of optimal tool decisions
+- `retrieved_correct_sources` - Source retrieval accuracy
+- `tool_optimal_rate` - Tool usage quality
 
 ## Project Structure
 
 ### Core Scripts
 
-- **`train_ruler.py`** - Main training script using RULER algorithm
-  - Initializes the model and serverless backend
-  - Runs the training loop with RULER scoring
-  - Performs validation at regular intervals
-  - Configurable training parameters (epochs, learning rate, etc.)
+#### Training Scripts
 
-- **`train_independent_reward.py`** - Alternative training script using independent reward scoring
-  - Uses independent reward evaluation where each trajectory is scored individually on an absolute scale
-  - Unlike RULER which compares trajectories to rank them relatively, this approach gives each trajectory its own independent score
-  - Useful for comparing different reward strategies and their impact on model training
+- **`train_with_ruler.py`** - Training with RULER algorithm
+  - Uses LLM judge to compare and rank trajectories
+  - Provides relative scoring based on trajectory comparison
+  - Best for learning from comparative feedback
 
-- **`create_leaderboard.py`** - Creates leaderboards for model comparison
-  - Compares multiple models using Weave evaluations
-  - Uses Weave scorers (Correctness, Source Retrieval, Tool Usage)
-  - Creates Weave leaderboards for easy comparison
-  - Logs metrics for parallel coordinates visualization
+- **`train_with_weave_scorers.py`** - Training with independent rewards
+  - Uses hand-crafted metrics (correctness, source retrieval, tool usage)
+  - Scores each trajectory independently on absolute scale
+  - Best for training with explicit reward signals
 
-- **`helpers.py`** - Shared utilities and functions
-  - `rollout()` - Core function that executes the agent on a scenario
-  - `CorrectnessJudgeScorer` - Weave scorer for LLM-based correctness evaluation
-  - `SourceRetrievalScorer` - Weave scorer for evaluating source email retrieval quality
-  - `ToolUsageScorer` - Weave scorer for LLM-based evaluation of each tool call decision (applied at every step)
-  - `print_trajectory()` - Pretty-prints agent trajectories
-  - **Weave Prompts**: All LLM judge prompts are version-controlled using Weave's prompt management
-  - Data models: `EmailScenario`, `ProjectTrajectory`, `CorrectnessJudgeResponse`, `ToolUsageJudgeResponse`
+- **`train_with_ruler_and_weave_scorers.py`** - Combined approach
+  - Combines RULER comparative scoring with independent metrics
+  - Best of both worlds: relative LLM feedback + explicit rewards
 
-### Supporting Files
+All training scripts support:
+- Custom config files (`--config`)
+- Automatic resumption (`--resume-auto`)
+- Resume specific runs (`--resume-id`)
 
-- **`enron_helpers.py`** - Enron dataset utilities and email search functions
-- **`upload_dataset_to_wandb.py`** - Upload datasets to W&B Artifacts, Weave Datasets, and W&B Tables
+#### Evaluation Scripts
 
-### Configuration Files
+- **`create_leaderboard.py`** - Model benchmarking and comparison
+  - Evaluates models using Weave scorers
+  - Creates Weave leaderboards
+  - Logs results to W&B for visualization
+  - Automatically detects available trained models
 
-- **`config.yaml`** - Training configuration (hyperparameters, model settings, W&B config)
+- **`upload_dataset_to_wandb.py`** - Dataset preparation
+  - Creates W&B Artifacts, Weave Datasets, and W&B Tables
+  - Must be run before training
+  - Ensures reproducibility with versioned datasets
 
-### Data Files
+#### Utility Files
 
-- `training_scenarios.json/csv` - Training dataset scenarios
-- `validation_scenarios.json/csv` - Validation dataset scenarios
-- `enron_emails.db` - SQLite database containing Enron email dataset
+- **`helpers.py`** - Shared utilities and Weave scorers
+  - `rollout()` - Executes agent on a scenario
+  - `CorrectnessJudgeScorer` - LLM-based answer correctness
+  - `SourceRetrievalScorer` - Source email retrieval metrics
+  - `ToolUsageScorer` - Tool call appropriateness evaluation
+  - Data models: `EmailScenario`, `ProjectTrajectory`, etc.
+  - All LLM judge prompts are version-controlled with Weave
+
+- **`enron_helpers.py`** - Enron dataset utilities
+  - Email search functions
+  - Database access
+  - Scenario management
+
+#### Configuration
+
+- **`config.yaml`** - Centralized configuration
+  - Model settings (base model, project name)
+  - Dataset configuration (sizes, seeds, artifacts)
+  - Judge models (RULER, correctness, tool usage)
+  - Training hyperparameters (epochs, learning rate, etc.)
+  - Validation and checkpointing settings
+
+#### Data Files
+
+- `enron_emails.db` - SQLite database with Enron emails
+- `training_scenarios.json` - Training scenarios
+- `validation_scenarios.json` - Validation scenarios
+- `artifacts/` - W&B dataset artifact cache
 
 ## Configuration
 
-All project configuration is stored in `config.yaml` and used across all scripts in the repository. See the file for complete configuration options. Key configuration sections include:
+All configuration is centralized in `config.yaml`. Key sections:
 
-- **Model configuration**: Project name, base model selection
-- **Dataset configuration**: Training/validation sizes, random seed, artifact references
-- **Judge models**: RULER judge, correctness judge, and tool usage judge models
-- **Training hyperparameters**: Groups per step, epochs, rollouts, learning rate
-- **Validation and evaluation**: Step intervals for validation
-- **Checkpointing**: Artifact saving preferences
-- **Reproducibility**: Random seeds
-- **W&B run configuration**: Run names and job types
+### Model Configuration
+- `project` - W&B project name
+- `base_model` - Base model to train (e.g., `OpenPipe/Qwen3-14B-Instruct`)
+- `model_name_ruler` - Name for RULER-trained model
+- `model_name_independent` - Name for Weave scorer-trained model
+- `model_name_combined` - Name for combined approach model
 
 ### Dataset Configuration
+- `training_dataset_size` - Number of training scenarios (default: 500)
+- `validation_dataset_size` - Number of validation scenarios (default: 100)
+- `dataset_seed` - Random seed for reproducibility (default: 42)
+- `training_dataset_artifact` - W&B artifact reference for training data
+- `validation_dataset_artifact` - W&B artifact reference for validation data
 
-Dataset sizes and random seed are centrally configured in `config.yaml`:
-
-- **`training_dataset_size`**: Number of training scenarios to load from the Enron dataset
-- **`validation_dataset_size`**: Number of validation scenarios to load
-- **`dataset_seed`**: Random seed for shuffling scenarios
-
-These settings are used by the `upload_dataset_to_wandb.py` script, ensuring that all artifact versions use the same data configuration.
+### Judge Models
+- `ruler_judge_model` - LLM judge for RULER scoring (e.g., `openai/gpt-5`)
+- `correctness_judge_model` - LLM judge for answer correctness
+- `tool_judge_model` - LLM judge for tool usage evaluation
+- `comparison_model` - Model for leaderboard comparison (e.g., `gpt-4o`)
 
 ### Training Hyperparameters
+- `groups_per_step` - Scenario groups per training step (default: 4)
+- `num_epochs` - Training epochs (default: 1)
+- `rollouts_per_group` - Trajectories per scenario for RULER (default: 4)
+- `learning_rate` - Learning rate (default: 1.0e-5)
 
-Training duration is determined by the formula: **Total training steps** = `(training_dataset_size / groups_per_step) * num_epochs`
+**Training duration**: Total steps = `(training_dataset_size / groups_per_step) * num_epochs`
 
-Training runs until all epochs are complete (no arbitrary max_steps limit).
+### Validation & Checkpointing
+- `validation_step_interval` - Steps between validations (default: 25)
+- `save_checkpoint_artifact` - Save checkpoints to W&B (default: true)
+- `log_correctness_correlation_plots` - Log correlation plots (default: true)
 
-Key parameters (see `config.yaml` for current values):
-- **`groups_per_step`**: Number of scenario groups processed per training step
-- **`num_epochs`**: Total number of passes through the training dataset
-- **`rollouts_per_group`**: Number of trajectories generated per scenario for RULER comparison
-- **`learning_rate`**: Learning rate for model updates
+### Using Custom Configurations
 
-### Dataset Artifacts
+Create different config files for different experiments:
 
-The training and evaluation scripts use W&B dataset artifacts to ensure reproducibility and proper lineage tracking:
-
-- **`training_dataset_artifact`**: W&B artifact containing training scenarios (e.g., `enron-training-scenarios:latest`)
-- **`validation_dataset_artifact`**: W&B artifact containing validation scenarios (e.g., `enron-validation-scenarios:latest`)
-
-During training and evaluation, these artifacts are automatically:
-1. **Marked as inputs** using `run.use_artifact()` - Creates clear lineage showing which datasets were used
-2. **Downloaded** to local cache - Ensures consistent data across runs
-3. **Loaded into memory** - Scenarios are parsed from JSON and validated
-
-This approach provides:
-- **Reproducibility**: Exact dataset versions are tracked with each run
-- **Lineage**: W&B shows which datasets produced which models
-- **Versioning**: Use specific versions (`:v1`) or always latest (`:latest`)
-- **Caching**: Artifacts are cached locally to speed up subsequent runs
-
-To create/update dataset artifacts, run:
 ```bash
-python upload_dataset_to_wandb.py
+# Create a custom config
+cp config.yaml config_high_lr.yaml
+# Edit config_high_lr.yaml to change settings
+
+# Run with custom config
+python train_with_ruler.py --config config_high_lr.yaml
 ```
 
-### Dataset Format Options
+## Key Features
 
-The project supports multiple dataset formats, each serving different purposes:
+### Dataset Management
 
-1. **W&B Artifacts** (Primary)
-   - Used by training and evaluation scripts
-   - Provides versioning and lineage tracking
-   - Automatically downloaded and cached
-   - **Required for training**
+**W&B Artifacts** (Required for training)
+- Versioned dataset storage with lineage tracking
+- Automatic caching and downloading
+- Ensures reproducibility across runs
 
-2. **Weave Datasets**
-   - Published to W&B Weave for LLM observability
-   - Enables advanced querying and filtering
-   - Integrates with Weave trace data
-   - **Optional but recommended**
+**Weave Datasets** (Optional, recommended)
+- LLM observability and advanced querying
+- Integrates with Weave trace data
+- Useful for debugging and analysis
 
-3. **W&B Tables**
-   - Interactive visualization in W&B UI
-   - Easy browsing and filtering of scenarios
-   - Useful for data exploration and QA
-   - **Optional for visualization**
+**W&B Tables** (Optional)
+- Interactive visualization in W&B UI
+- Easy browsing and filtering
+- Helpful for data exploration
 
-The `upload_dataset_to_wandb.py` script creates all three formats in one run, ensuring consistency across all representations.
+The `upload_dataset_to_wandb.py` script creates all three formats in one run.
 
 ### Checkpoint Management
 
-The training script saves checkpoint metadata as W&B artifacts after each training step:
+When `save_checkpoint_artifact: true`:
+- Checkpoint metadata saved as W&B artifacts after each step
+- Includes training state, hyperparameters, and dataset references
+- Full history preserved (no deletion)
+- Clear lineage between datasets, checkpoints, and runs
+- Easy rollback to any previous checkpoint
 
-- **`save_checkpoint_artifact`**: When `true`, saves checkpoint metadata as W&B model artifacts
-- Checkpoint artifacts include:
-  - Training step and epoch information
-  - All hyperparameters and configuration
-  - Dataset artifact references used for training
-  - Judge model configurations
-
-This provides:
-- **Full history**: All checkpoints are preserved (not deleted)
-- **Reproducibility**: Complete training configuration saved with each checkpoint
-- **Lineage**: Clear connection between datasets, checkpoints, and training runs
-- **Rollback**: Easy to identify and return to any previous checkpoint
-
-The actual checkpoint files are managed by the ART ServerlessBackend on W&B servers. The artifacts serve as metadata records linked to these checkpoints.
+Actual checkpoint files are managed by ART ServerlessBackend on W&B servers.
 
 ### Judge Models
 
-The project uses two different judge models for different purposes:
+The project uses multiple LLM judges:
 
-- **`ruler_judge_model`**: Used during training by the RULER algorithm to assign relative scores to trajectory groups. This helps the model learn from comparative feedback.
-- **`correctness_judge_model`**: Used to evaluate the correctness of final answers by comparing them against reference answers. This provides absolute accuracy metrics.
+- **`ruler_judge_model`** - RULER algorithm scoring (comparative)
+- **`correctness_judge_model`** - Answer correctness evaluation (absolute)
+- **`tool_judge_model`** - Tool usage appropriateness evaluation
 
-The configuration is automatically tracked with each training run in W&B, making it easy to:
-- Compare experiments with different hyperparameters
-- Reproduce training runs exactly
-- Track which config produced which results
-- Version control configurations separately from code
-- Run multiple experiments with different config files
-
-**Note:** All scripts in this repository now use `config.yaml` for the project name and other settings, replacing the previous `WANDB_PROJECT` environment variable. This ensures consistency across training, evaluation, and data preparation scripts.
-
-### Creating Multiple Configurations
-
-You can create different config files for different experiments:
-
-```bash
-# Create a config for a high learning rate experiment
-cp config.yaml config_high_lr.yaml
-# Edit config_high_lr.yaml to change learning_rate to 5e-5
-
-# Run with the new config
-python train_ruler.py --config config_high_lr.yaml
-```
+All judge prompts are version-controlled using Weave's prompt management.
 
 ## Requirements
 
-See `requirements.txt` for dependencies.
+### Dependencies
 
-## Related Work
+Install from `requirements.txt`:
 
-1. [ART Example Notebook](https://colab.research.google.com/github/openpipe/art-notebooks/blob/main/examples/art-e.ipynb)
+```bash
+pip install -r requirements.txt
+```
+
+Key dependencies:
+- `openpipe-art>=0.5.2` - OpenPipe ART framework
+- `wandb` - Experiment tracking
+- `weave` - LLM observability
+- `pydantic` - Data validation
+- `litellm` - LLM API wrapper
+- Additional utilities: `langchain-core`, `tenacity`, `datasets`, `tqdm`, `pyyaml`
+
+### Environment Variables
+
+Create a `.env` file with:
+
+```bash
+WANDB_API_KEY=your_wandb_key
+OPENAI_API_KEY=your_openai_key  # For judge models
+```
+
+## Example Workflow
+
+Here's a complete workflow from setup to evaluation:
+
+```bash
+# 1. Setup
+pip install -r requirements.txt
+# Create .env with your API keys
+
+# 2. Prepare datasets
+python upload_dataset_to_wandb.py
+
+# 3. Train with RULER
+python train_with_ruler.py
+
+# 4. Evaluate and compare
+python create_leaderboard.py
+
+# 5. View results in W&B
+# Visit: https://wandb.ai/[your-entity]/email-search-agent-art-demo
+```
+
+## Dataset
+
+This project uses the [Enron Email Dataset](https://www.cs.cmu.edu/~enron/), a public corpus of emails made available by the Federal Energy Regulatory Commission during their investigation. The dataset is included in the repository as `enron_emails.db`.
+
+## Resources
+
+### OpenPipe
+- [ART Documentation](https://docs.openpipe.ai/features/art)
+- [RULER Reward Function](https://docs.openpipe.ai/features/art/reward-functions/ruler)
+- [ART Example Notebook](https://colab.research.google.com/github/openpipe/art-notebooks/blob/main/examples/art-e.ipynb)
+
+### W&B
+- [W&B Models Documentation](https://docs.wandb.ai/guides/models)
+- [W&B Weave Documentation](https://wandb.me/weave)
+- [Weave Evaluations Guide](https://wandb.github.io/weave/guides/evaluation/)
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+MIT

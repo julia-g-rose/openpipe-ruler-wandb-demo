@@ -2,7 +2,7 @@
 # This file defines all hyperparameters and settings for the training run
 
 # Model configuration
-project: "demo-project-qwen-email-agent-with-art-weave-models"
+project: "email-search-agent-art-demo"
 model_name_ruler: "qwen-trained-with-ruler"  # Base name for RULER training (LR will be appended)
 model_name_independent: "qwen-trained-with-independent-scorer-rewards"  # Base name for independent reward training (LR will be appended)
 model_name_combined: "qwen-trained-with-ruler-and-weave-scorers"  # Base name for combined RULER + independent rewards (LR will be appended)
